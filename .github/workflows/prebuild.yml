@@ -114,6 +114,17 @@ jobs:
           pattern: prebuild-*
           merge-multiple: true
           path: .
+      - name: Collect prebuilds
+        run: |
+          set -e
+          mkdir -p prebuilds
+          shopt -s nullglob
+          for dir in prebuild-*; do
+            [ -d "$dir" ] || continue
+            platform=${dir#prebuild-}
+            mkdir -p "prebuilds/$platform"
+            mv "$dir"/* "prebuilds/$platform"/
+          done
       - name: List prebuilds
         run: find prebuilds -maxdepth 3 -type f
       - name: Publish package
