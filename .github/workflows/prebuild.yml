@@ -112,7 +112,6 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           pattern: prebuild-*
-          merge-multiple: true
           path: .
       - name: Collect prebuilds
         run: |
