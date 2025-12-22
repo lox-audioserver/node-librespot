@@ -1,0 +1,182 @@
+import fs from 'node:fs';
+import path from 'node:path';
+
+import type {
+  ConnectHandle,
+  CreateSessionOpts,
+  CredentialsResult,
+  LibrespotSession,
+  StreamHandle,
+  StreamTrackOpts,
+} from './types';
+
+function detectLibc(): 'gnu' | 'musl' {
+  const glibcVersionRuntime =
+    // @ts-expect-error
+    process.report?.getReport?.()?.header?.glibcVersionRuntime;
+  return glibcVersionRuntime ? 'gnu' : 'musl';
+}
+
+function platformArchABI(): string {
+  const { platform, arch } = process;
+  if (platform === 'linux') {
+    return `linux-${arch}-${detectLibc()}`;
+  }
+  if (platform === 'darwin') {
+    return `darwin-${arch}`;
+  }
+  if (platform === 'win32') {
+    return `win32-${arch}-msvc`;
+  }
+  throw new Error(`Unsupported platform ${platform}-${arch}`);
+}
+
+function resolveNativeBinding() {
+  const override = process.env.LOX_LIBRESPOT_ADDON_PATH;
+  if (override && fs.existsSync(override)) {
+    return override;
+  }
+
+  const prebuiltPath = path.join(
+    __dirname,
+    '..',
+    'prebuilds',
+    platformArchABI(),
+    'librespot_addon.node',
+  );
+  if (fs.existsSync(prebuiltPath)) {
+    return prebuiltPath;
+  }
+
+  const localBuildPath = path.join(__dirname, 'librespot_addon.node');
+  if (fs.existsSync(localBuildPath)) {
+    return localBuildPath;
+  }
+
+  throw new Error(
+    `librespot_addon.node not found for ${platformArchABI()}. ` +
+      'Install a prebuilt binary, build locally with "npm run build", ' +
+      'or point LOX_LIBRESPOT_ADDON_PATH to the compiled addon.',
+  );
+}
+
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const native = require(resolveNativeBinding()) as {
+  createSession(opts: CreateSessionOpts): Promise<LibrespotSession>;
+  loginWithUserPass(
+    username: string,
+    password: string,
+    cacheDir?: string,
+    deviceName?: string,
+  ): Promise<CredentialsResult>;
+  startZeroconfLogin(
+    deviceId: string,
+    name?: string | null,
+    timeoutMs?: number | null,
+  ): Promise<CredentialsResult>;
+  startConnectDevice(
+    cacheDir: string | undefined,
+    credentialsPath: string,
+    name: string,
+    deviceId: string,
+    onChunk: (chunk: Buffer) => void,
+    onEvent?: (event: any) => void,
+  ): Promise<ConnectHandle>;
+};
+
+function wrapStreamHandle(handle: StreamHandle) {
+  return {
+    stop: () => handle.stop(),
+    get sampleRate() {
+      return (handle as any).sampleRate ?? (handle as any).sample_rate ?? handle.sampleRate;
+    },
+    get channels() {
+      return (handle as any).channels ?? handle.channels;
+    },
+  };
+}
+
+function wrapSession(session: LibrespotSession) {
+  return {
+    streamTrack: (opts: StreamTrackOpts, onChunk: (chunk: Buffer) => void, onEvent?: any) => {
+      const nativeOpts = {
+        uri: opts.uri,
+        startPositionMs: (opts as any).startPositionMs ?? (opts as any).start_position_ms,
+        bitrate: opts.bitrate,
+        output: (opts as any).output,
+        emitEvents: (opts as any).emitEvents ?? (opts as any).emit_events,
+      };
+      const handle = (session as any).streamTrack(nativeOpts, onChunk, onEvent);
+      return wrapStreamHandle(handle);
+    },
+    close: () => session.close(),
+  };
+}
+
+export function createSession(opts: CreateSessionOpts): Promise<LibrespotSession> {
+  const nativeOpts = {
+    cacheDir: (opts as any).cacheDir ?? (opts as any).cache_dir,
+    credentialsPath: (opts as any).credentialsPath ?? (opts as any).credentials_path,
+    credentialsJson: (opts as any).credentialsJson ?? (opts as any).credentials_json,
+    username: opts.username,
+    password: opts.password,
+    deviceName: (opts as any).deviceName ?? (opts as any).device_name,
+  };
+  return native.createSession(nativeOpts as CreateSessionOpts).then((sess) => wrapSession(sess) as any);
+}
+
+export function loginWithUserPass(
+  username: string,
+  password: string,
+  cacheDir?: string,
+  deviceName?: string,
+): Promise<CredentialsResult> {
+  return native.loginWithUserPass(username, password, cacheDir, deviceName).then((res: any) => {
+    const credentialsJson = res.credentialsJson ?? res.credentials_json;
+    return {
+      ...res,
+      credentialsJson,
+      credentials_json: credentialsJson ?? res.credentials_json,
+    };
+  });
+}
+
+export function startZeroconfLogin(
+  deviceId: string,
+  name?: string,
+  timeoutMs?: number,
+): Promise<CredentialsResult> {
+  return native.startZeroconfLogin(deviceId, name, timeoutMs).then((res: any) => {
+    const credentialsJson = res.credentialsJson ?? res.credentials_json;
+    return {
+      ...res,
+      credentialsJson,
+      credentials_json: credentialsJson ?? res.credentials_json,
+    };
+  });
+}
+
+export function startConnectDevice(
+  cacheDir: string | undefined,
+  credentialsPath: string,
+  name: string,
+  deviceId: string,
+  onChunk: (chunk: Buffer) => void,
+  onEvent?: (event: any) => void,
+): Promise<ConnectHandle> {
+  return Promise.resolve(
+    native.startConnectDevice(cacheDir, credentialsPath, name, deviceId, onChunk, onEvent),
+  ).then((handle: ConnectHandle & { sample_rate?: number }) => ({
+    stop: () => handle.stop(),
+    play: () => handle.play(),
+    pause: () => handle.pause(),
+    next: () => handle.next(),
+    prev: () => handle.prev(),
+    sampleRate: (handle as any).sampleRate ?? (handle as any).sample_rate ?? (handle as any).sampleRate,
+    channels: (handle as any).channels,
+  }));
+}
+
+// Export raw native binding for advanced use/debugging.
+export { native };
+export * from './types';

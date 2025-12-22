@@ -1,0 +1,7 @@
+node_modules
+target
+build
+*.log
+*.node
+dist
+.DS_Store

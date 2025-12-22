@@ -1,0 +1,98 @@
+name: build
+
+on:
+  release:
+    types: [created]
+
+jobs:
+  build:
+    name: Build (Node 20)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install dependencies
+        env:
+          LOX_LIBRESPOT_SKIP_BUILD: "1"
+        run: npm ci
+      - name: Build addon
+        run: npm run build
+
+  prebuild:
+    name: Prebuild ${{ matrix.platform_arch }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            platform_arch: linux-x64-gnu
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            platform_arch: linux-arm64-gnu
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            platform_arch: darwin-arm64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install cross toolchain
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu pkg-config
+      - name: Install dependencies
+        env:
+          LOX_LIBRESPOT_SKIP_BUILD: "1"
+        run: npm ci
+      - name: Build prebuilt binary
+        env:
+          RUST_TARGET: ${{ matrix.target }}
+        run: npm run build:prebuild
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: prebuild-${{ matrix.platform_arch }}
+          path: prebuilds/${{ matrix.platform_arch }}
+
+  publish:
+    name: Publish to npm
+    needs: prebuild
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+      - name: Install dependencies
+        env:
+          LOX_LIBRESPOT_SKIP_BUILD: "1"
+        run: npm ci
+      - name: Compile JS/types
+        run: npm run build:types:clean
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: prebuild-*
+          merge-multiple: true
+          path: .
+      - name: List prebuilds
+        run: find prebuilds -maxdepth 3 -type f
+      - name: Publish package
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public

@@ -1,0 +1,25 @@
+[package]
+name = "librespot-addon"
+version = "0.1.0"
+edition = "2021"
+description = "Rust-based librespot binding for Node via N-API."
+license = "Apache-2.0"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+napi = { version = "2", features = ["tokio_rt"] }
+napi-derive = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+futures = "0.3"
+bytes = "1"
+bytemuck = { version = "1", features = ["extern_crate_alloc"] }
+librespot = { version = "0.4.2", default-features = false }
+librespot-core = { version = "0.4.2", default-features = false }
+librespot-playback = { version = "0.4.2", default-features = false }
+librespot-discovery = { version = "0.4.2", default-features = false }
+librespot-connect = { version = "0.4.2", default-features = false }
+librespot-metadata = { version = "0.4.2", default-features = false }
+serde_json = "1"
+tokio-stream = "0.1"
