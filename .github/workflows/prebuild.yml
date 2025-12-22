@@ -3,6 +3,13 @@ name: build
 on:
   release:
     types: [created]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the npm package
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   build:
@@ -68,6 +75,7 @@ jobs:
   publish:
     name: Publish to npm
     needs: prebuild
+    if: github.event_name == 'release' || github.event.inputs.publish == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
