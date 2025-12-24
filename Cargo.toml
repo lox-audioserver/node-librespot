@@ -15,11 +15,15 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 futures = "0.3"
 bytes = "1"
 bytemuck = { version = "1", features = ["extern_crate_alloc"] }
-librespot = { version = "0.4.2", default-features = false }
-librespot-core = { version = "0.4.2", default-features = false }
-librespot-playback = { version = "0.4.2", default-features = false }
-librespot-discovery = { version = "0.4.2", default-features = false }
-librespot-connect = { version = "0.4.2", default-features = false }
-librespot-metadata = { version = "0.4.2", default-features = false }
+librespot-core = { path = "./librespot-dev/core", default-features = false, features = [
+    "rustls-tls-native-roots",
+] }
+librespot-playback = { path = "./librespot-dev/playback", default-features = false }
+librespot-discovery = { path = "./librespot-dev/discovery", default-features = false, features = [
+    "with-libmdns",
+] }
+librespot-connect = { path = "./librespot-dev/connect", default-features = false }
+librespot-metadata = { path = "./librespot-dev/metadata", default-features = false }
 serde_json = "1"
 tokio-stream = "0.1"
+log = { version = "0.4", features = ["std"] }

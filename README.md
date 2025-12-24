@@ -6,7 +6,7 @@ Used by [lox-audioserver](https://github.com/rudyberends/lox-audioserver) to han
 
 ## Features
 - Stream a Spotify track/episode to PCM buffers (`streamTrack`).
-- Create credentials from username/password (`loginWithUserPass`) or Zeroconf pairing (`startZeroconfLogin`).
+- Create credentials from OAuth access tokens (`loginWithAccessToken`) or Zeroconf pairing (`startZeroconfLogin`).
 - Connect hosting (`startConnectDevice`) with basic controls/events, inline credentials, and metadata enrichment (title/artist/album) without touching disk or cache directories.
 - Starts Connect hosts at max volume (we keep volume control on the consumer side).
 
@@ -29,11 +29,12 @@ Runtime will load `librespot_addon.node` from `prebuilds/<platform-arch>/` when 
 
 ## Usage
 ```ts
-import { createSession } from 'node-librespot';
+import { createSession, setLogLevel } from 'node-librespot';
+
+setLogLevel('debug'); // off|error|warn|info|debug|trace
 
 const session = await createSession({
-  cacheDir: '/tmp/lox-librespot/zone-1',
-  credentialsPath: '/tmp/lox-librespot/zone-1/credentials.json',
+  credentialsJson,
   deviceName: 'lox-zone-1',
 });
 
@@ -42,9 +43,41 @@ const handle = session.streamTrack(
   (chunk) => {
     // chunk is a Buffer with PCM s16le frames (44.1kHz stereo)
   },
+  (event) => {
+    // optional events: playing/paused/loading/stopped/end_of_track/error/health/metric
+    // error codes include: audio_key_error, no_pcm, end_of_track, pcm_missing, pcm_stalled, unavailable
+    // metric names include: first_pcm_ms, buffer_stall_ms, decode_error
+  },
+  (log) => {
+    // optional logging callback { level, message, scope }
+  },
 );
 
 handle.stop();
+```
+
+## OAuth credentials
+This module can mint librespot credentials from a Spotify OAuth access token via `loginWithAccessToken`.
+You bring your own OAuth flow (e.g. Authorization Code with PKCE) and pass the **user** access token here.
+
+Key points:
+- The access token is only used to bootstrap librespot credentials; it is not stored by this module.
+- The returned `credentialsJson` is a serialized librespot credential blob. Store it and reuse it for playback
+  and Connect hosting. You do not need a cache directory.
+- If the access token is invalid/expired, `loginWithAccessToken` will fail. In that case, fall back to
+  `startZeroconfLogin` to re-pair and then replace stored credentials.
+
+Example:
+```ts
+import { loginWithAccessToken, createSession } from 'node-librespot';
+
+const { credentialsJson, username } = await loginWithAccessToken(accessToken, 'lox-zone-1');
+
+// Persist credentialsJson for reuse, then create a session:
+const session = await createSession({
+  credentialsJson,
+  deviceName: 'lox-zone-1',
+});
 ```
 
 ### Connect hosting
@@ -52,12 +85,12 @@ handle.stop();
 import { startConnectDevice } from 'node-librespot';
 
 const host = await startConnectDevice(
-  undefined,              // cacheDir (optional)
   credentialsJsonString,  // inline credentials JSON or path to file
   'Lox-AudioServer',      // publish name
   'lox-zone-1',           // device id
   (chunk) => { /* PCM s16le frames */ },
-  (event) => { /* playing/paused/track_changed with enriched metadata */ },
+  (event) => { /* playing/paused/loading/end_of_track/error/health/metric with metadata */ },
+  (log) => { /* optional log callback */ },
 );
 
 host.play();
@@ -65,6 +98,8 @@ host.pause();
 host.next();
 host.prev();
 host.stop();
+host.shutdown(); // alias for stop()
+host.close();    // alias for stop()
 ```
 
 ## Development / publish

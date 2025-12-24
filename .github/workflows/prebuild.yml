@@ -20,6 +20,9 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
+      - name: Update librespot dev
+        run: npm run update-librespot
+        working-directory: native/node-librespot
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -51,6 +54,9 @@ jobs:
             platform_arch: darwin-arm64
     steps:
       - uses: actions/checkout@v4
+      - name: Update librespot dev
+        run: npm run update-librespot
+        working-directory: native/node-librespot
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -98,6 +104,9 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v4
+      - name: Update librespot dev
+        run: npm run update-librespot
+        working-directory: native/node-librespot
       - uses: actions/setup-node@v4
         with:
           node-version: 20
