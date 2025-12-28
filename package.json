@@ -1,6 +1,6 @@
 {
   "name": "node-librespot",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Node.js bindings for librespot (Spotify Connect) via N-API with prebuild support.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
