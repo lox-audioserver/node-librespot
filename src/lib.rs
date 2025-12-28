@@ -2149,9 +2149,60 @@ pub fn start_connect_device_with_token(
             std::env::set_var("LOX_LIBRESPOT_CLIENT_ID", client_id);
         }
     }
-    let credentials = Credentials::with_access_token(access_token);
-    let credentials_json =
-        serde_json::to_string(&credentials).map_err(|e| Error::from_reason(format!("{e}")))?;
+
+    // Exchange the access token for reusable librespot credentials (same as login_with_access_token).
+    let credentials_json = {
+        let token = access_token.clone();
+        let device_for_session = device_id.clone();
+        runtime()
+            .block_on(async move {
+                let mut session_config = SessionConfig::default();
+                session_config.device_id = device_for_session.clone();
+                if let Ok(client_id_override) = std::env::var("LOX_LIBRESPOT_CLIENT_ID") {
+                    if !client_id_override.trim().is_empty() {
+                        session_config.client_id = client_id_override;
+                    }
+                }
+
+                let credentials = Credentials::with_access_token(token);
+                let epoch_ms = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_err(|e| Error::from_reason(format!("{e}")))?
+                    .as_millis();
+                let temp_dir = std::env::temp_dir().join(format!(
+                    "lox-librespot-oauth-connect-{}-{}",
+                    epoch_ms,
+                    std::process::id()
+                ));
+                fs::create_dir_all(&temp_dir)
+                    .map_err(|e| Error::from_reason(format!("{e}")))?;
+                let cache = Cache::new(
+                    Some(&temp_dir),
+                    None::<&std::path::PathBuf>,
+                    None::<&std::path::PathBuf>,
+                    None,
+                )
+                .map_err(|e| Error::from_reason(format!("{e}")))?;
+
+                let session = Session::new(session_config, Some(cache.clone()));
+                session
+                    .connect(credentials.clone(), true)
+                    .await
+                    .map_err(|e| Error::from_reason(format!("session connect failed: {e}")))?;
+
+                let reusable_credentials = cache
+                    .credentials()
+                    .ok_or_else(|| Error::from_reason("no reusable credentials after oauth login"))?;
+
+                drop(session);
+                let _ = fs::remove_dir_all(&temp_dir);
+
+                serde_json::to_string(&reusable_credentials)
+                    .map_err(|e| Error::from_reason(format!("{e}")))
+            })
+            .map_err(|e| Error::from_reason(format!("{e}")))?
+    };
+
     start_connect_device_inner(
         credentials_json,
         name,
