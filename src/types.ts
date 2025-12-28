@@ -2,10 +2,8 @@
 
 /** Options used to create a librespot session. */
 export interface CreateSessionOpts {
-  credentialsPath?: string;
-  credentialsJson?: string;
-  username?: string;
-  password?: string;
+  accessToken?: string;
+  clientId?: string;
   deviceName?: string;
 }
 

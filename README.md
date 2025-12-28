@@ -5,10 +5,11 @@ Native Node.js bindings for [librespot](https://github.com/librespot-org/libresp
 Used by [lox-audioserver](https://github.com/rudyberends/lox-audioserver) to handle spotify traffic, but can be used by other software.
 
 ## Features
-- Stream a Spotify track/episode to PCM buffers (`streamTrack`).
-- Create credentials from OAuth access tokens (`loginWithAccessToken`) or Zeroconf pairing (`startZeroconfLogin`).
-- Connect hosting (`startConnectDevice`) with basic controls/events, inline credentials, and metadata enrichment (title/artist/album) without touching disk or cache directories.
-- Starts Connect hosts at max volume (we keep volume control on the consumer side).
+- Stream a Spotify track/episode to PCM buffers (`streamTrack`) using a Web API **access token**.
+- Host a Spotify Connect endpoint with a Web API access token + your own Spotify app client id (`startConnectDeviceWithToken`).
+- No disk cache required; everything stays in-memory.
+- Starts Connect hosts at max volume (volume control stays on the consumer side).
+- `startConnectDevice` (credential-blob based) is deprecated and will error.
 
 ## Install
 ```bash
@@ -34,7 +35,8 @@ import { createSession, setLogLevel } from 'node-librespot';
 setLogLevel('debug'); // off|error|warn|info|debug|trace
 
 const session = await createSession({
-  credentialsJson,
+  accessToken,          // user Web API access token (PKCE/Authorization Code)
+  clientId,             // your Spotify app client id
   deviceName: 'lox-zone-1',
 });
 
@@ -53,6 +55,27 @@ const handle = session.streamTrack(
   },
 );
 
+// Host a Connect device with the same token
+import { startConnectDeviceWithToken } from 'node-librespot';
+
+const host = await startConnectDeviceWithToken(
+  accessToken,
+  clientId,
+  'Lox-AudioServer', // publish name
+  'lox-zone-1',      // device id
+  (chunk) => { /* PCM s16le frames */ },
+  (event) => { /* playing/paused/loading/end_of_track/error/health/metric with metadata */ },
+  (log) => { /* optional log callback */ },
+);
+
+host.play();
+host.pause();
+host.next();
+host.prev();
+host.stop();
+host.shutdown(); // alias for stop()
+host.close();    // alias for stop()
+
 // Or pull decrypted audio file bytes (Ogg/MP3) without decoding:
 const download = await downloadTrack(
   { uri: 'spotify:track:...', bitrate: 320 },
@@ -69,51 +92,12 @@ const download = await downloadTrack(
 handle.stop();
 ```
 
-## OAuth credentials
-This module can mint librespot credentials from a Spotify OAuth access token via `loginWithAccessToken`.
-You bring your own OAuth flow (e.g. Authorization Code with PKCE) and pass the **user** access token here.
+## Authentication
+- Only Web API access tokens are supported (bring your own PKCE/Authorization Code flow).
+- Supply your app’s client id via `clientId` or `LOX_LIBRESPOT_CLIENT_ID` env var.
+- `startConnectDevice` is removed; use `startConnectDeviceWithToken` instead.
 
-Key points:
-- The access token is only used to bootstrap librespot credentials; it is not stored by this module.
-- The returned `credentialsJson` is a serialized librespot credential blob. Store it and reuse it for playback
-  and Connect hosting. You do not need a cache directory.
-- If the access token is invalid/expired, `loginWithAccessToken` will fail. In that case, fall back to
-  `startZeroconfLogin` to re-pair and then replace stored credentials.
-
-Example:
-```ts
-import { loginWithAccessToken, createSession } from 'node-librespot';
-
-const { credentialsJson, username } = await loginWithAccessToken(accessToken, 'lox-zone-1');
-
-// Persist credentialsJson for reuse, then create a session:
-const session = await createSession({
-  credentialsJson,
-  deviceName: 'lox-zone-1',
-});
-```
-
-### Connect hosting
-```ts
-import { startConnectDevice } from 'node-librespot';
-
-const host = await startConnectDevice(
-  credentialsJsonString,  // inline credentials JSON or path to file
-  'Lox-AudioServer',      // publish name
-  'lox-zone-1',           // device id
-  (chunk) => { /* PCM s16le frames */ },
-  (event) => { /* playing/paused/loading/end_of_track/error/health/metric with metadata */ },
-  (log) => { /* optional log callback */ },
-);
-
-host.play();
-host.pause();
-host.next();
-host.prev();
-host.stop();
-host.shutdown(); // alias for stop()
-host.close();    // alias for stop()
-```
+If the token is invalid/expired, playback/Connect hosting will fail; refresh the token in your host app and retry.
 
 ## Development / publish
 - CI: `.github/workflows/prebuild.yml` runs on release creation, building prebuild artifacts for Linux x64 (glibc), Linux arm64 (glibc), and macOS arm64 before publishing to npm (requires `NPM_TOKEN` secret).

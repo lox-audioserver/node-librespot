@@ -84,10 +84,8 @@ fn stream_data_rate(format: AudioFileFormat) -> Option<usize> {
 /// Options used to create a librespot session.
 #[napi(object)]
 pub struct CreateSessionOpts {
-    pub credentials_path: Option<String>,
-    pub credentials_json: Option<String>,
-    pub username: Option<String>,
-    pub password: Option<String>,
+    pub access_token: Option<String>,
+    pub client_id: Option<String>,
     pub device_name: Option<String>,
 }
 
@@ -1464,38 +1462,21 @@ impl LibrespotSession {
     }
 }
 
-/// Create a session from stored credentials or username/password.
+/// Create a session using a Web API access token (client id optional via opts or env).
 #[napi]
 pub async fn create_session(opts: CreateSessionOpts) -> Result<LibrespotSession> {
-    if opts.username.is_none() && opts.credentials_path.is_none() && opts.credentials_json.is_none()
-    {
+    let access_token = opts
+        .access_token
+        .clone()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if access_token.is_empty() {
         return Err(Error::from_reason(
-            "provide credentials_path or username/password",
+            "access token is required; obtain a user token via PKCE/Web API",
         ));
     }
-
-    let credentials = if let Some(raw) = opts.credentials_json.clone() {
-        serde_json::from_str::<Credentials>(&raw)
-            .map_err(|e| Error::from_reason(format!("invalid credentials json: {e}")))?
-    } else if let Some(path) = opts.credentials_path.clone() {
-        if !Path::new(&path).exists() {
-            return Err(Error::from_reason(format!(
-                "credentials file not found: {}",
-                path
-            )));
-        }
-        let mut file = File::open(path).map_err(|e| Error::from_reason(format!("{e}")))?;
-        let mut buf = String::new();
-        file.read_to_string(&mut buf)
-            .map_err(|e| Error::from_reason(format!("{e}")))?;
-        serde_json::from_str::<Credentials>(&buf)
-            .map_err(|e| Error::from_reason(format!("invalid credentials json: {e}")))?
-    } else {
-        Credentials::with_password(
-            opts.username.unwrap_or_default(),
-            opts.password.unwrap_or_default(),
-        )
-    };
+    let credentials = Credentials::with_access_token(access_token);
 
     let mut session_config = SessionConfig::default();
     let mut device_id = opts.device_name.unwrap_or_else(|| "librespot".to_string());
@@ -1503,6 +1484,11 @@ pub async fn create_session(opts: CreateSessionOpts) -> Result<LibrespotSession>
         device_id = "librespot".to_string();
     }
     session_config.device_id = device_id.clone();
+    if let Some(client_id) = opts.client_id {
+        if !client_id.trim().is_empty() {
+            session_config.client_id = client_id;
+        }
+    }
 
     let session = Session::new(session_config, None);
     session
@@ -1519,10 +1505,10 @@ pub async fn create_session(opts: CreateSessionOpts) -> Result<LibrespotSession>
     })
 }
 
-/// Start a Spotify Connect device. Placeholder implementation that returns an error until
-/// full connect hosting is wired.
-#[napi]
-pub fn start_connect_device(
+/// Internal helper to start a Spotify Connect device using provided credentials.
+/// Accepts credentials (typically created from an OAuth access token) and is shared by the
+/// token-based public entrypoint.
+fn start_connect_device_inner(
     credentials_path: String,
     name: String,
     device_id: String,
@@ -1530,10 +1516,6 @@ pub fn start_connect_device(
     on_event: Option<JsFunction>,
     on_log: Option<JsFunction>,
 ) -> Result<ConnectHandle> {
-    if credentials_path.trim().is_empty() {
-        return Err(Error::from_reason("credentials payload is required"));
-    }
-
     let tsfn: ThreadsafeFunction<Bytes, ErrorStrategy::Fatal> = on_chunk
         .create_threadsafe_function(0, |ctx: ThreadSafeCallContext<Bytes>| {
             let env = ctx.env;
@@ -1637,7 +1619,6 @@ pub fn start_connect_device(
             Some(&device_id),
             Some(&session_id),
         );
-        // Treat credentials_path as either a file path or an inline JSON blob.
         let credentials: Credentials = if Path::new(&credentials_path).exists() {
             let mut file =
                 File::open(&credentials_path).map_err(|e| Error::from_reason(format!("{e}")))?;
@@ -1653,6 +1634,11 @@ pub fn start_connect_device(
 
         let mut session_config = SessionConfig::default();
         session_config.device_id = device_id.clone();
+        if let Ok(client_id_override) = std::env::var("LOX_LIBRESPOT_CLIENT_ID") {
+            if !client_id_override.trim().is_empty() {
+                session_config.client_id = client_id_override;
+            }
+        }
         // Spirc::new neemt zelf de connect stap; we maken hier alleen een verse session.
         let session = Session::new(session_config.clone(), None);
 
@@ -2127,6 +2113,53 @@ pub fn start_connect_device(
             task: task_handle,
         })
     })
+}
+
+/// Legacy entrypoint removed from the JS API; kept for binary compatibility but always errors.
+#[napi]
+pub fn start_connect_device(
+    _credentials_path: String,
+    _name: String,
+    _device_id: String,
+    _on_chunk: JsFunction,
+    _on_event: Option<JsFunction>,
+    _on_log: Option<JsFunction>,
+) -> Result<ConnectHandle> {
+    Err(Error::from_reason(
+        "startConnectDevice is deprecated; use startConnectDeviceWithToken(accessToken, clientId, ...)",
+    ))
+}
+
+/// Start a Spotify Connect device using a Web API access token + client id (bypasses builtin login).
+#[napi]
+pub fn start_connect_device_with_token(
+    access_token: String,
+    client_id: Option<String>,
+    name: String,
+    device_id: String,
+    on_chunk: JsFunction,
+    on_event: Option<JsFunction>,
+    on_log: Option<JsFunction>,
+) -> Result<ConnectHandle> {
+    if access_token.trim().is_empty() {
+        return Err(Error::from_reason("access token is required"));
+    }
+    if let Some(client_id) = client_id {
+        if !client_id.trim().is_empty() {
+            std::env::set_var("LOX_LIBRESPOT_CLIENT_ID", client_id);
+        }
+    }
+    let credentials = Credentials::with_access_token(access_token);
+    let credentials_json =
+        serde_json::to_string(&credentials).map_err(|e| Error::from_reason(format!("{e}")))?;
+    start_connect_device_inner(
+        credentials_json,
+        name,
+        device_id,
+        on_chunk,
+        on_event,
+        on_log,
+    )
 }
 
 /// Perform access-token login and return the credentials JSON blob.

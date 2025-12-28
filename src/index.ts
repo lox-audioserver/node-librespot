@@ -128,10 +128,8 @@ function wrapSession(session: LibrespotSession) {
 
 export function createSession(opts: CreateSessionOpts): Promise<LibrespotSession> {
   const nativeOpts = {
-    credentialsPath: (opts as any).credentialsPath ?? (opts as any).credentials_path,
-    credentialsJson: (opts as any).credentialsJson ?? (opts as any).credentials_json,
-    username: opts.username,
-    password: opts.password,
+    accessToken: (opts as any).accessToken ?? (opts as any).access_token,
+    clientId: (opts as any).clientId ?? (opts as any).client_id,
     deviceName: (opts as any).deviceName ?? (opts as any).device_name,
   };
   return native.createSession(nativeOpts as CreateSessionOpts).then((sess) => wrapSession(sess) as any);
@@ -174,8 +172,23 @@ export function startConnectDevice(
   onEvent?: (event: ConnectEvent) => void,
   onLog?: (event: LogEvent) => void,
 ): Promise<ConnectHandle> {
+  // Legacy entrypoint kept for API compatibility; immediately fails.
+  return Promise.reject(
+    new Error('startConnectDevice is deprecated; use startConnectDeviceWithToken(accessToken, clientId, ...)'),
+  );
+}
+
+export function startConnectDeviceWithToken(
+  accessToken: string,
+  clientId: string | undefined,
+  name: string,
+  deviceId: string,
+  onChunk: (chunk: Buffer) => void,
+  onEvent?: (event: ConnectEvent) => void,
+  onLog?: (event: LogEvent) => void,
+): Promise<ConnectHandle> {
   return Promise.resolve(
-    native.startConnectDevice(credentialsPath, name, deviceId, onChunk, onEvent, onLog),
+    native.startConnectDeviceWithToken(accessToken, clientId, name, deviceId, onChunk, onEvent, onLog),
   ).then((handle: ConnectHandle & { sample_rate?: number }) => ({
     stop: () => handle.stop(),
     shutdown: () => handle.shutdown(),
