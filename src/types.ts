@@ -18,6 +18,12 @@ export interface StreamTrackOpts {
   emitEvents?: boolean;
 }
 
+/** Options for downloading raw (decrypted) audio bytes. */
+export interface DownloadTrackOpts {
+  uri: string;
+  bitrate?: number;
+}
+
 /** Result of a credentials login flow. */
 export interface CredentialsResult {
   username: string;
@@ -115,6 +121,11 @@ export interface StreamHandle {
   stop(): void;
   sampleRate: number;
   channels: number;
+}
+
+/** Handle for a raw download stream. */
+export interface DownloadHandle {
+  stop(): void;
 }
 
 export declare function setLogLevel(level: string): void;

@@ -18,6 +18,9 @@ bytemuck = { version = "1", features = ["extern_crate_alloc"] }
 librespot-core = { path = "./librespot-dev/core", default-features = false, features = [
     "rustls-tls-native-roots",
 ] }
+librespot-audio = { path = "./librespot-dev/audio", default-features = false, features = [
+    "rustls-tls-native-roots",
+] }
 librespot-playback = { path = "./librespot-dev/playback", default-features = false }
 librespot-discovery = { path = "./librespot-dev/discovery", default-features = false, features = [
     "with-libmdns",

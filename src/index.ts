@@ -10,6 +10,8 @@ import type {
   LogEvent,
   StreamHandle,
   StreamTrackOpts,
+  DownloadTrackOpts,
+  DownloadHandle,
 } from './types';
 
 function detectLibc(): 'gnu' | 'musl' {
@@ -70,6 +72,11 @@ const native = require(resolveNativeBinding()) as {
     accessToken: string,
     deviceName?: string,
   ): Promise<CredentialsResult>;
+  downloadTrack(
+    opts: DownloadTrackOpts,
+    onChunk: (chunk: Buffer) => void,
+    onLog?: (event: LogEvent) => void,
+  ): Promise<DownloadHandle>;
   startZeroconfLogin(
     deviceId: string,
     name?: string | null,
@@ -184,6 +191,18 @@ export function startConnectDevice(
 
 export function setLogLevel(level: string): void {
   native.setLogLevel(level);
+}
+
+export function downloadTrack(
+  opts: DownloadTrackOpts,
+  onChunk: (chunk: Buffer) => void,
+  onLog?: (event: LogEvent) => void,
+): Promise<DownloadHandle> {
+  const nativeOpts = {
+    uri: opts.uri,
+    bitrate: opts.bitrate,
+  };
+  return native.downloadTrack(nativeOpts, onChunk, onLog);
 }
 
 // Export raw native binding for advanced use/debugging.

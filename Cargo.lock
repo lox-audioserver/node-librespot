@@ -1118,6 +1118,7 @@ dependencies = [
  "bytemuck",
  "bytes",
  "futures",
+ "librespot-audio",
  "librespot-connect",
  "librespot-core",
  "librespot-discovery",

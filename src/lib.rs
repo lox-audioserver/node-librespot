@@ -9,12 +9,14 @@ use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
+use librespot_audio::{AudioDecrypt, AudioFile};
 use librespot_connect::{ConnectConfig, Spirc};
 use librespot_core::{
-    authentication::Credentials, cache::Cache, config::SessionConfig, session::Session, SpotifyUri,
+    authentication::Credentials, cache::Cache, config::SessionConfig, session::Session, SpotifyId,
+    SpotifyUri, spotify_id::FileId,
 };
 use librespot_discovery::{DeviceType, Discovery};
-use librespot_metadata::audio::AudioItem;
+use librespot_metadata::audio::{AudioFileFormat, AudioFiles, AudioItem};
 use librespot_metadata::{Album, Artist, Metadata, Track};
 use librespot_playback::{
     audio_backend::{Sink, SinkResult},
@@ -53,6 +55,32 @@ fn runtime() -> &'static tokio::runtime::Runtime {
     })
 }
 
+fn stream_data_rate(format: AudioFileFormat) -> Option<usize> {
+    let kbps = match format {
+        AudioFileFormat::OGG_VORBIS_96 => 12.,
+        AudioFileFormat::OGG_VORBIS_160 => 20.,
+        AudioFileFormat::OGG_VORBIS_320 => 40.,
+        AudioFileFormat::MP3_256 => 32.,
+        AudioFileFormat::MP3_320 => 40.,
+        AudioFileFormat::MP3_160 => 20.,
+        AudioFileFormat::MP3_96 => 12.,
+        AudioFileFormat::MP3_160_ENC => 20.,
+        AudioFileFormat::AAC_24 => 3.,
+        AudioFileFormat::AAC_48 => 6.,
+        AudioFileFormat::AAC_160 => 20.,
+        AudioFileFormat::AAC_320 => 40.,
+        AudioFileFormat::MP4_128 => 16.,
+        AudioFileFormat::OTHER5 => 40.,
+        AudioFileFormat::FLAC_FLAC => 112., // assume ~900 kbit/s
+        AudioFileFormat::XHE_AAC_12 => 1.5,
+        AudioFileFormat::XHE_AAC_16 => 2.,
+        AudioFileFormat::XHE_AAC_24 => 3.,
+        AudioFileFormat::FLAC_FLAC_24BIT => 3.,
+    };
+    let data_rate: f32 = kbps * 1024.;
+    Some(data_rate.ceil() as usize)
+}
+
 /// Options used to create a librespot session.
 #[napi(object)]
 pub struct CreateSessionOpts {
@@ -71,6 +99,12 @@ pub struct StreamTrackOpts {
     pub bitrate: Option<u32>,
     pub output: Option<String>,
     pub emit_events: Option<bool>,
+}
+
+#[napi(object)]
+pub struct DownloadTrackOpts {
+    pub uri: String,
+    pub bitrate: Option<u32>,
 }
 
 /// Result of a credentials login flow.
@@ -195,6 +229,24 @@ pub struct StreamHandle {
     channels: u16,
     #[allow(dead_code)]
     event_tsfn: Option<ThreadsafeFunction<ConnectEvent, ErrorStrategy::Fatal>>,
+}
+
+#[napi]
+pub struct DownloadHandle {
+    stop_flag: Arc<AtomicBool>,
+    #[allow(dead_code)]
+    task: tokio::task::JoinHandle<()>,
+    #[allow(dead_code)]
+    tsfn: ThreadsafeFunction<Bytes, ErrorStrategy::Fatal>,
+}
+
+#[napi]
+impl DownloadHandle {
+    #[napi]
+    pub fn stop(&mut self) {
+        self.stop_flag.store(true, Ordering::Release);
+        self.task.abort();
+    }
 }
 
 #[napi]
@@ -1228,6 +1280,184 @@ impl LibrespotSession {
         })
     }
 
+    /// Download (stream) raw decrypted audio bytes for a track/episode.
+    #[napi]
+    pub fn download_track(
+        &self,
+        opts: DownloadTrackOpts,
+        on_chunk: JsFunction,
+        on_log: Option<JsFunction>,
+    ) -> Result<DownloadHandle> {
+        let uri = opts.uri.clone();
+        if uri.is_empty() {
+            return Err(Error::from_reason("uri is required"));
+        }
+        let spotify_uri = SpotifyUri::from_uri(&uri)
+            .map_err(|e| Error::from_reason(format!("invalid spotify uri: {:?}", e)))?;
+
+        let (tx, mut rx) = mpsc::channel::<Bytes>(16);
+        let stop_flag = Arc::new(AtomicBool::new(false));
+
+        let tsfn: ThreadsafeFunction<Bytes, ErrorStrategy::Fatal> = on_chunk
+            .create_threadsafe_function(0, |ctx: ThreadSafeCallContext<Bytes>| {
+                let env = ctx.env;
+                let buffer = ctx.value;
+                let js_buffer = env.create_buffer_with_data(buffer.to_vec())?;
+                Ok(vec![js_buffer.into_unknown()])
+            })?;
+
+        let log_tsfn: Option<ThreadsafeFunction<LogEvent, ErrorStrategy::Fatal>> = on_log
+            .map(|f| {
+                f.create_threadsafe_function(0, |ctx: ThreadSafeCallContext<LogEvent>| {
+                    let env = ctx.env;
+                    let val = ctx.value;
+                    let mut obj = env.create_object()?;
+                    obj.set_named_property("level", env.create_string(&val.level)?)?;
+                    obj.set_named_property("message", env.create_string(&val.message)?)?;
+                    if let Some(scope) = val.scope {
+                        obj.set_named_property("scope", env.create_string(&scope)?)?;
+                    }
+                    if let Some(device_id) = val.device_id {
+                        obj.set_named_property("deviceId", env.create_string(&device_id)?)?;
+                    }
+                    if let Some(session_id) = val.session_id {
+                        obj.set_named_property("sessionId", env.create_string(&session_id)?)?;
+                    }
+                    Ok(vec![obj.into_unknown()])
+                })
+            })
+            .transpose()?;
+
+        init_native_logger(log_tsfn.clone());
+        let device_id = self.device_id.clone();
+        let session_id = next_session_id("download");
+        emit_log_ctx(
+            &log_tsfn,
+            "info",
+            format!("download_track start uri={}", uri),
+            Some("download_track"),
+            Some(&device_id),
+            Some(&session_id),
+        );
+
+        runtime().spawn({
+            let tsfn = tsfn.clone();
+            let stop_flag = stop_flag.clone();
+            async move {
+                while let Some(chunk) = rx.recv().await {
+                    if stop_flag.load(Ordering::Acquire) {
+                        break;
+                    }
+                    let _ = tsfn.call(chunk, ThreadsafeFunctionCallMode::NonBlocking);
+                }
+            }
+        });
+
+        let session = self.session.clone();
+        let bitrate_pref = opts.bitrate;
+
+        let track_id: SpotifyId = (&spotify_uri)
+            .try_into()
+            .map_err(|e| Error::from_reason(format!("invalid spotify id: {e:?}")))?;
+
+        let (encrypted_file, key) = runtime()
+            .block_on(async {
+                let audio_item = AudioItem::get_file(&session, spotify_uri.clone())
+                    .await
+                    .map_err(|e| Error::from_reason(format!("failed to load audio item: {e:?}")))?;
+
+                let select_format =
+                    |files: &AudioFiles, bitrate: Option<u32>| -> Option<(AudioFileFormat, FileId)> {
+                        let prefer = match bitrate {
+                            Some(96) => {
+                                vec![AudioFileFormat::OGG_VORBIS_96, AudioFileFormat::MP3_96]
+                            }
+                            Some(160) => {
+                                vec![AudioFileFormat::OGG_VORBIS_160, AudioFileFormat::MP3_160]
+                            }
+                            _ => vec![
+                                AudioFileFormat::OGG_VORBIS_320,
+                                AudioFileFormat::MP3_320,
+                                AudioFileFormat::MP3_256,
+                            ],
+                        };
+                        for f in prefer {
+                            if let Some(id) = files.get(&f) {
+                                return Some((f, *id));
+                            }
+                        }
+                        files.iter().next().map(|(f, id)| (*f, *id))
+                    };
+
+                let (format, file_id) = select_format(&audio_item.files, bitrate_pref)
+                    .ok_or_else(|| Error::from_reason("no audio files available"))?;
+
+                let bytes_per_second = stream_data_rate(format)
+                    .ok_or_else(|| Error::from_reason("unable to compute data rate"))?;
+
+                let encrypted_file = AudioFile::open(&session, file_id, bytes_per_second)
+                    .await
+                    .map_err(|e| {
+                        Error::from_reason(format!("failed to open audio file: {e:?}"))
+                    })?;
+
+                let key = match session.audio_key().request(track_id, file_id).await {
+                    Ok(key) => Some(key),
+                    Err(e) => {
+                        emit_log_ctx(
+                            &log_tsfn,
+                            "warn",
+                            format!("audio key unavailable, continuing without decryption: {e:?}"),
+                            Some("download_track"),
+                            None,
+                            None,
+                        );
+                        None
+                    }
+                };
+
+                Ok::<_, Error>((encrypted_file, key))
+            })?;
+
+        let stop_flag_clone = stop_flag.clone();
+        let log_tsfn_clone = log_tsfn.clone();
+
+        let task = runtime().spawn(async move {
+            let mut decrypted = AudioDecrypt::new(key, encrypted_file);
+            let mut buf = vec![0u8; 32 * 1024];
+            loop {
+                if stop_flag_clone.load(Ordering::Acquire) {
+                    break;
+                }
+                match decrypted.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        if tx.send(Bytes::copy_from_slice(&buf[..n])).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        emit_log_ctx(
+                            &log_tsfn_clone,
+                            "error",
+                            format!("read error: {e:?}"),
+                            Some("download_track"),
+                            None,
+                            None,
+                        );
+                        break;
+                    }
+                }
+            }
+        });
+
+        Ok(DownloadHandle {
+            stop_flag,
+            task,
+            tsfn,
+        })
+    }
+
     #[napi]
     pub async fn close(&self) -> Result<()> {
         Ok(())
@@ -1423,46 +1653,8 @@ pub fn start_connect_device(
 
         let mut session_config = SessionConfig::default();
         session_config.device_id = device_id.clone();
-
-        let mut session_result: Option<Session> = None;
-        let mut last_error: Option<String> = None;
-        for attempt in 0..3 {
-            let session = Session::new(session_config.clone(), None);
-            match session.connect(credentials.clone(), true).await {
-                Ok(()) => {
-                    emit_log_ctx(
-                        &log_tsfn,
-                        "info",
-                        format!("session connect ok (attempt {})", attempt + 1),
-                        Some("connect_host"),
-                        Some(&device_id),
-                        Some(&session_id),
-                    );
-                    session_result = Some(session);
-                    break;
-                }
-                Err(err) => {
-                    last_error = Some(format!("{err}"));
-                    emit_log_ctx(
-                        &log_tsfn,
-                        "warn",
-                        format!("session connect failed (attempt {}): {}", attempt + 1, err),
-                        Some("connect_host"),
-                        Some(&device_id),
-                        Some(&session_id),
-                    );
-                    if attempt < 2 {
-                        tokio::time::sleep(Duration::from_millis(400 * (attempt as u64 + 1))).await;
-                    }
-                }
-            }
-        }
-        let session = session_result.ok_or_else(|| {
-            Error::from_reason(format!(
-                "session connect failed: {}",
-                last_error.unwrap_or_else(|| "unknown error".into())
-            ))
-        })?;
+        // Spirc::new neemt zelf de connect stap; we maken hier alleen een verse session.
+        let session = Session::new(session_config.clone(), None);
 
         let connect_config = ConnectConfig {
             name: name.clone(),

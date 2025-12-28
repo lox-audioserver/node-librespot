@@ -53,6 +53,19 @@ const handle = session.streamTrack(
   },
 );
 
+// Or pull decrypted audio file bytes (Ogg/MP3) without decoding:
+const download = await downloadTrack(
+  { uri: 'spotify:track:...', bitrate: 320 },
+  (chunk) => {
+    // chunk is a Buffer with decrypted compressed audio data
+  },
+  (log) => {
+    // optional logging callback { level, message, scope }
+  },
+);
+// download.stop() to cancel
+// Promise rejects on initial errors (invalid URI, unavailable track, key/file fetch failure).
+
 handle.stop();
 ```
 

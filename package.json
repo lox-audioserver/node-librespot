@@ -23,6 +23,9 @@
     "build:types": "tsc -p tsconfig.build.json && rm -f index.d.ts",
     "build:types:clean": "rm -rf dist && npm run build:types",
     "clean": "rm -rf build dist prebuilds *.log *.node target index.d.ts",
+    "test": "node scripts/test.js",
+    "test:connect": "node scripts/test-connect.js",
+    "test:service": "node scripts/test-service.js",
     "update-librespot": "bash scripts/update-librespot.sh",
     "prepublishOnly": "npm run build:types",
     "postinstall": "node scripts/postinstall.js"
