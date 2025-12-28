@@ -90,6 +90,15 @@ const native = require(resolveNativeBinding()) as {
     onEvent?: (event: ConnectEvent) => void,
     onLog?: (event: LogEvent) => void,
   ): Promise<ConnectHandle>;
+  startConnectDeviceWithToken(
+    accessToken: string,
+    clientId: string | undefined,
+    name: string,
+    deviceId: string,
+    onChunk: (chunk: Buffer) => void,
+    onEvent?: (event: ConnectEvent) => void,
+    onLog?: (event: LogEvent) => void,
+  ): Promise<ConnectHandle>;
 };
 
 function wrapStreamHandle(handle: StreamHandle) {
