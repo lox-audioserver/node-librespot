@@ -134,8 +134,8 @@ jobs:
         run: find prebuilds -maxdepth 3 -type f
       - name: Verify pack contains prebuilds
         run: |
-          npm pack
-          tar -tf node-librespot-*.tgz | grep prebuilds
+          pkg="$(npm pack)"
+          tar -tf "$pkg" | grep prebuilds
       - name: Publish package
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
