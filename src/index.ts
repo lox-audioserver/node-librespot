@@ -67,6 +67,10 @@ function resolveNativeBinding() {
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const native = require(resolveNativeBinding()) as {
   createSession(opts: CreateSessionOpts): Promise<LibrespotSession>;
+  createSessionWithCredentials(
+    credentialsPath: string,
+    deviceName?: string | null,
+  ): Promise<LibrespotSession>;
   setLogLevel(level: string): void;
   loginWithAccessToken(
     accessToken: string,
@@ -83,6 +87,14 @@ const native = require(resolveNativeBinding()) as {
     timeoutMs?: number | null,
   ): Promise<CredentialsResult>;
   startConnectDevice(
+    credentialsPath: string,
+    name: string,
+    deviceId: string,
+    onChunk: (chunk: Buffer) => void,
+    onEvent?: (event: ConnectEvent) => void,
+    onLog?: (event: LogEvent) => void,
+  ): Promise<ConnectHandle>;
+  startConnectDeviceWithCredentials(
     credentialsPath: string,
     name: string,
     deviceId: string,
@@ -144,6 +156,15 @@ export function createSession(opts: CreateSessionOpts): Promise<LibrespotSession
   return native.createSession(nativeOpts as CreateSessionOpts).then((sess) => wrapSession(sess) as any);
 }
 
+export function createSessionWithCredentials(
+  credentialsPathOrJson: string,
+  deviceName?: string | null,
+): Promise<LibrespotSession> {
+  return native
+    .createSessionWithCredentials(credentialsPathOrJson, deviceName ?? null)
+    .then((sess) => wrapSession(sess) as any);
+}
+
 export function loginWithAccessToken(
   accessToken: string,
   deviceName?: string,
@@ -185,6 +206,29 @@ export function startConnectDevice(
   return Promise.reject(
     new Error('startConnectDevice is deprecated; use startConnectDeviceWithToken(accessToken, clientId, ...)'),
   );
+}
+
+export function startConnectDeviceWithCredentials(
+  credentialsPathOrJson: string,
+  name: string,
+  deviceId: string,
+  onChunk: (chunk: Buffer) => void,
+  onEvent?: (event: ConnectEvent) => void,
+  onLog?: (event: LogEvent) => void,
+): Promise<ConnectHandle> {
+  return Promise.resolve(
+    native.startConnectDeviceWithCredentials(credentialsPathOrJson, name, deviceId, onChunk, onEvent, onLog),
+  ).then((handle: ConnectHandle & { sample_rate?: number }) => ({
+    stop: () => handle.stop(),
+    shutdown: () => handle.shutdown(),
+    close: () => handle.close(),
+    play: () => handle.play(),
+    pause: () => handle.pause(),
+    next: () => handle.next(),
+    prev: () => handle.prev(),
+    sampleRate: (handle as any).sampleRate ?? (handle as any).sample_rate ?? (handle as any).sampleRate,
+    channels: (handle as any).channels,
+  }));
 }
 
 export function startConnectDeviceWithToken(

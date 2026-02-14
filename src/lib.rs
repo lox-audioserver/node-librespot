@@ -1505,6 +1505,58 @@ pub async fn create_session(opts: CreateSessionOpts) -> Result<LibrespotSession>
     })
 }
 
+/// Create a session using a reusable librespot credentials blob (JSON) or a path to credentials.json.
+///
+/// This avoids relying on a Web API access token for streaming.
+#[napi]
+pub async fn create_session_with_credentials(
+    credentials_path: String,
+    device_name: Option<String>,
+) -> Result<LibrespotSession> {
+    if credentials_path.trim().is_empty() {
+        return Err(Error::from_reason("credentials payload is required"));
+    }
+
+    let credentials: Credentials = if Path::new(&credentials_path).exists() {
+        let mut file =
+            File::open(&credentials_path).map_err(|e| Error::from_reason(format!("{e}")))?;
+        let mut buf = String::new();
+        file.read_to_string(&mut buf)
+            .map_err(|e| Error::from_reason(format!("{e}")))?;
+        serde_json::from_str(&buf)
+            .map_err(|e| Error::from_reason(format!("invalid credentials json: {e}")))?
+    } else {
+        serde_json::from_str(&credentials_path)
+            .map_err(|e| Error::from_reason(format!("invalid credentials json: {e}")))?
+    };
+
+    let mut session_config = SessionConfig::default();
+    let mut device_id = device_name.unwrap_or_else(|| "librespot".to_string());
+    if device_id.trim().is_empty() {
+        device_id = "librespot".to_string();
+    }
+    session_config.device_id = device_id.clone();
+    if let Ok(client_id_override) = std::env::var("LOX_LIBRESPOT_CLIENT_ID") {
+        if !client_id_override.trim().is_empty() {
+            session_config.client_id = client_id_override;
+        }
+    }
+
+    let session = Session::new(session_config, None);
+    session
+        .connect(credentials, false)
+        .await
+        .map_err(|e| Error::from_reason(format!("session connect failed: {e}")))?;
+
+    let player_config = PlayerConfig::default();
+
+    Ok(LibrespotSession {
+        session,
+        player_config,
+        device_id,
+    })
+}
+
 /// Internal helper to start a Spotify Connect device using provided credentials.
 /// Accepts credentials (typically created from an OAuth access token) and is shared by the
 /// token-based public entrypoint.
@@ -1646,6 +1698,7 @@ fn start_connect_device_inner(
             name: name.clone(),
             device_type: DeviceType::Speaker,
             is_group: false,
+            emit_set_queue_events: false,
             // Start with full volume so we rely on zone-side volume control; we do not sync Spotify volume.
             // Spotify volume scale is 0..65535; use max to avoid muted start.
             initial_volume: u16::MAX,
@@ -2128,6 +2181,32 @@ pub fn start_connect_device(
     Err(Error::from_reason(
         "startConnectDevice is deprecated; use startConnectDeviceWithToken(accessToken, clientId, ...)",
     ))
+}
+
+/// Start a Spotify Connect device using an existing credentials JSON blob (or a path to credentials.json).
+///
+/// This avoids exchanging a Web API token for credentials, and allows reusing credentials minted via
+/// Zeroconf or other flows.
+#[napi]
+pub fn start_connect_device_with_credentials(
+    credentials_path: String,
+    name: String,
+    device_id: String,
+    on_chunk: JsFunction,
+    on_event: Option<JsFunction>,
+    on_log: Option<JsFunction>,
+) -> Result<ConnectHandle> {
+    if credentials_path.trim().is_empty() {
+        return Err(Error::from_reason("credentials payload is required"));
+    }
+    start_connect_device_inner(
+        credentials_path,
+        name,
+        device_id,
+        on_chunk,
+        on_event,
+        on_log,
+    )
 }
 
 /// Start a Spotify Connect device using a Web API access token + client id (bypasses builtin login).
