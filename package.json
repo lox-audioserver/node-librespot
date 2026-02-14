@@ -1,6 +1,6 @@
 {
   "name": "@lox-audioserver/node-librespot",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Node.js bindings for librespot (Spotify Connect) via N-API with prebuild support.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
