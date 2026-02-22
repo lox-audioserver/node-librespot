@@ -550,6 +550,7 @@ impl Sink for ChannelSink {
             self.last_pcm_at.store(now_ms, Ordering::Release);
         }
         // Pacing: throttle to approximate realtime based on sample count.
+        // Send first chunk immediately to minimize startup latency; apply pacing after forwarding.
         let bytes_per_sample = match self.format {
             AudioFormat::S24 => 3,
             AudioFormat::S32 | AudioFormat::F32 => 4,
@@ -557,18 +558,16 @@ impl Sink for ChannelSink {
         };
         let samples = bytes.len() / (bytes_per_sample * self.channels as usize);
         let duration = Duration::from_secs_f64(samples as f64 / self.sample_rate as f64);
+        if self.tx.try_send(bytes).is_err() {
+            // Drop chunk if JS side is backpressured to avoid blocking the player thread.
+        }
         let start = self.start.get_or_insert_with(Instant::now);
         self.expected_elapsed += duration;
         let target = *start + self.expected_elapsed;
         let now = Instant::now();
         let sleep_dur = target.saturating_duration_since(now);
-
         if !sleep_dur.is_zero() {
             sleep(sleep_dur);
-        }
-
-        if self.tx.try_send(bytes).is_err() {
-            // Drop chunk if JS side is backpressured to avoid blocking the player thread.
         }
         Ok(())
     }
