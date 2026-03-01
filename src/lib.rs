@@ -43,10 +43,42 @@ use tokio_stream::StreamExt;
 static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 static LOGGER_INIT: OnceLock<()> = OnceLock::new();
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
+static COLLECTION_PARSE_LOG_NEXT_AT_MS: AtomicU64 = AtomicU64::new(0);
 
 fn next_session_id(prefix: &str) -> String {
     let next = SESSION_COUNTER.fetch_add(1, Ordering::Relaxed);
     format!("{prefix}-{next}")
+}
+
+fn unix_epoch_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_else(|_| Duration::from_secs(0))
+        .as_millis() as u64
+}
+
+fn normalize_collection_parse_warning(event: &mut LogEvent) -> bool {
+    let scope = event.scope.as_deref().unwrap_or("").to_lowercase();
+    if !scope.contains("librespot_core::dealer") {
+        return false;
+    }
+    let message = event.message.to_lowercase();
+    let looks_like_collection_parse_noise =
+        message.contains("failure during data parsing for hm://collection/collection/")
+            && message.contains("base64 decoding failed");
+    if !looks_like_collection_parse_noise {
+        return false;
+    }
+
+    let now = unix_epoch_ms();
+    let next_at = COLLECTION_PARSE_LOG_NEXT_AT_MS.load(Ordering::Relaxed);
+    if now < next_at {
+        return true;
+    }
+    COLLECTION_PARSE_LOG_NEXT_AT_MS.store(now + 60_000, Ordering::Relaxed);
+    event.level = "debug".to_string();
+    event.message = "suppressed recurring dealer parse warning for hm://collection payload".to_string();
+    false
 }
 
 fn runtime() -> &'static tokio::runtime::Runtime {
@@ -308,13 +340,16 @@ impl Log for NativeLogger {
     }
 
     fn log(&self, record: &Record<'_>) {
-        let event = LogEvent {
+        let mut event = LogEvent {
             level: record.level().to_string().to_lowercase(),
             message: record.args().to_string(),
             scope: Some(record.target().to_string()),
             device_id: None,
             session_id: None,
         };
+        if normalize_collection_parse_warning(&mut event) {
+            return;
+        }
         let mut observers = log_observers()
             .lock()
             .unwrap_or_else(|err| err.into_inner());
