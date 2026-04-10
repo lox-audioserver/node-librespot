@@ -163,6 +163,8 @@ pub struct ConnectEvent {
     pub metric_name: Option<String>,
     pub metric_value_ms: Option<u32>,
     pub metric_message: Option<String>,
+    /// Credentials JSON blob delivered via mDNS discovery when a new Spotify user connects.
+    pub credentials_json: Option<String>,
 }
 
 /// Log payload emitted by the native module.
@@ -572,6 +574,7 @@ impl Sink for ChannelSink {
                         metric_name: Some("first_pcm_ms".into()),
                         metric_value_ms: Some(elapsed_ms_u32),
                         metric_message: None,
+                        credentials_json: None,
                     };
                     let _ = tsfn_ev.call(payload, ThreadsafeFunctionCallMode::NonBlocking);
                 }
@@ -689,6 +692,12 @@ impl LibrespotSession {
                             env.create_string(&metric_message)?,
                         )?;
                     }
+                    if let Some(creds_json) = val.credentials_json {
+                        obj.set_named_property(
+                            "credentialsJson",
+                            env.create_string(&creds_json)?,
+                        )?;
+                    }
                     Ok(vec![obj.into_unknown()])
                 })
             })
@@ -755,7 +764,7 @@ impl LibrespotSession {
         let error_sent = Arc::new(AtomicBool::new(false));
         let decoder_metric_sent = Arc::new(AtomicBool::new(false));
         let stop_flag = Arc::new(AtomicBool::new(false));
-        let track_id_for_events = spotify_uri.to_id();
+        let track_id_for_events = spotify_uri.to_id().ok().unwrap_or_default();
         let track_id_for_sink = track_id_for_events.clone();
         let uri_for_sink = uri.clone();
         let backend_factory = {
@@ -847,6 +856,7 @@ impl LibrespotSession {
                                 metric_name: Some("decode_error".into()),
                                 metric_value_ms: None,
                                 metric_message: Some(event.message.clone()),
+                                credentials_json: None,
                             };
                             let _ = tsfn_ev.call(payload, ThreadsafeFunctionCallMode::NonBlocking);
                         }
@@ -879,6 +889,7 @@ impl LibrespotSession {
                         metric_name: None,
                         metric_value_ms: None,
                         metric_message: None,
+                        credentials_json: None,
                     };
                     let _ = tsfn_ev.call(payload, ThreadsafeFunctionCallMode::NonBlocking);
                 }
@@ -937,6 +948,7 @@ impl LibrespotSession {
               metric_name: None,
               metric_value_ms: None,
               metric_message: None,
+              credentials_json: None,
             };
             let _ = tsfn_ev.call(payload, ThreadsafeFunctionCallMode::NonBlocking);
           }
@@ -990,6 +1002,7 @@ impl LibrespotSession {
               metric_name: Some("buffer_stall_ms".into()),
               metric_value_ms: Some(stall_ms_u32),
               metric_message: Some("pcm stalled".into()),
+              credentials_json: None,
             };
               let _ = tsfn_ev.call(metric_payload, ThreadsafeFunctionCallMode::NonBlocking);
             }
@@ -1010,6 +1023,7 @@ impl LibrespotSession {
               metric_name: None,
               metric_value_ms: None,
               metric_message: None,
+              credentials_json: None,
             };
             let _ = tsfn_ev.call(payload, ThreadsafeFunctionCallMode::NonBlocking);
           }
@@ -1103,6 +1117,7 @@ impl LibrespotSession {
                     metric_name: None,
                     metric_value_ms: None,
                     metric_message: None,
+                    credentials_json: None,
                   };
                   let _ = tsfn_ev.call(payload, ThreadsafeFunctionCallMode::NonBlocking);
                 }
@@ -1114,8 +1129,8 @@ impl LibrespotSession {
                   r#type: "playing".into(),
                   device_id: Some(device_id_for_events.clone()),
                   session_id: Some(session_id_for_events.clone()),
-                  track_id: Some(track_id.to_id()),
-                  uri: Some(track_id.to_uri()),
+                  track_id: track_id.to_id().ok(),
+                  uri: track_id.to_uri().ok(),
                   title: None,
                   artist: None,
                   album: None,
@@ -1127,13 +1142,14 @@ impl LibrespotSession {
                   metric_name: None,
                   metric_value_ms: None,
                   metric_message: None,
+                  credentials_json: None,
                 },
                 PlayerEvent::Paused { track_id, position_ms, .. } => ConnectEvent {
                   r#type: "paused".into(),
                   device_id: Some(device_id_for_events.clone()),
                   session_id: Some(session_id_for_events.clone()),
-                  track_id: Some(track_id.to_id()),
-                  uri: Some(track_id.to_uri()),
+                  track_id: track_id.to_id().ok(),
+                  uri: track_id.to_uri().ok(),
                   title: None,
                   artist: None,
                   album: None,
@@ -1145,13 +1161,14 @@ impl LibrespotSession {
                   metric_name: None,
                   metric_value_ms: None,
                   metric_message: None,
+                  credentials_json: None,
                 },
                 PlayerEvent::Loading { track_id, position_ms, .. } => ConnectEvent {
                   r#type: "loading".into(),
                   device_id: Some(device_id_for_events.clone()),
                   session_id: Some(session_id_for_events.clone()),
-                  track_id: Some(track_id.to_id()),
-                  uri: Some(track_id.to_uri()),
+                  track_id: track_id.to_id().ok(),
+                  uri: track_id.to_uri().ok(),
                   title: None,
                   artist: None,
                   album: None,
@@ -1163,13 +1180,14 @@ impl LibrespotSession {
                   metric_name: None,
                   metric_value_ms: None,
                   metric_message: None,
+                  credentials_json: None,
                 },
                 PlayerEvent::Stopped { track_id, .. } => ConnectEvent {
                   r#type: "stopped".into(),
                   device_id: Some(device_id_for_events.clone()),
                   session_id: Some(session_id_for_events.clone()),
-                  track_id: Some(track_id.to_id()),
-                  uri: Some(track_id.to_uri()),
+                  track_id: track_id.to_id().ok(),
+                  uri: track_id.to_uri().ok(),
                   title: None,
                   artist: None,
                   album: None,
@@ -1181,17 +1199,18 @@ impl LibrespotSession {
                   metric_name: None,
                   metric_value_ms: None,
                   metric_message: None,
+                  credentials_json: None,
                 },
                 PlayerEvent::EndOfTrack { track_id, .. } => {
                   if !saw_playing || last_duration_ms.is_none() {
                     if !error_sent_for_spawn.swap(true, Ordering::AcqRel) {
-                      let fallback_id = track_id.to_id();
+                      let fallback_id = track_id.to_id().ok();
                       let payload = ConnectEvent {
                         r#type: "error".into(),
                         device_id: Some(device_id_for_events.clone()),
                         session_id: Some(session_id_for_events.clone()),
-                        track_id: Some(fallback_id),
-                        uri: Some(track_id.to_uri()),
+                        track_id: fallback_id,
+                        uri: track_id.to_uri().ok(),
                         title: None,
                         artist: None,
                         album: None,
@@ -1203,6 +1222,7 @@ impl LibrespotSession {
                         metric_name: None,
                         metric_value_ms: None,
                         metric_message: None,
+                        credentials_json: None,
                       };
                       let _ = tsfn_ev.call(payload, ThreadsafeFunctionCallMode::NonBlocking);
                     }
@@ -1212,8 +1232,8 @@ impl LibrespotSession {
                     r#type: "end_of_track".into(),
                     device_id: Some(device_id_for_events.clone()),
                     session_id: Some(session_id_for_events.clone()),
-                    track_id: Some(track_id.to_id()),
-                    uri: Some(track_id.to_uri()),
+                    track_id: track_id.to_id().ok(),
+                    uri: track_id.to_uri().ok(),
                     title: None,
                     artist: None,
                     album: None,
@@ -1225,14 +1245,15 @@ impl LibrespotSession {
                     metric_name: None,
                     metric_value_ms: None,
                     metric_message: None,
+                    credentials_json: None,
                   }
                 }
                 PlayerEvent::Unavailable { track_id, .. } => ConnectEvent {
                   r#type: "unavailable".into(),
                   device_id: Some(device_id_for_events.clone()),
                   session_id: Some(session_id_for_events.clone()),
-                  track_id: Some(track_id.to_id()),
-                  uri: Some(track_id.to_uri()),
+                  track_id: track_id.to_id().ok(),
+                  uri: track_id.to_uri().ok(),
                   title: None,
                   artist: None,
                   album: None,
@@ -1244,6 +1265,7 @@ impl LibrespotSession {
                   metric_name: None,
                   metric_value_ms: None,
                   metric_message: None,
+                  credentials_json: None,
                 },
                 PlayerEvent::VolumeChanged { volume } => ConnectEvent {
                   r#type: "volume".into(),
@@ -1262,13 +1284,14 @@ impl LibrespotSession {
                   metric_name: None,
                   metric_value_ms: None,
                   metric_message: None,
+                  credentials_json: None,
                 },
                 PlayerEvent::PositionCorrection { track_id, position_ms, .. } => ConnectEvent {
                   r#type: "position_correction".into(),
                   device_id: Some(device_id_for_events.clone()),
                   session_id: Some(session_id_for_events.clone()),
-                  track_id: Some(track_id.to_id()),
-                  uri: Some(track_id.to_uri()),
+                  track_id: track_id.to_id().ok(),
+                  uri: track_id.to_uri().ok(),
                   title: None,
                   artist: None,
                   album: None,
@@ -1280,6 +1303,7 @@ impl LibrespotSession {
                   metric_name: None,
                   metric_value_ms: None,
                   metric_message: None,
+                  credentials_json: None,
                 },
                 _ => continue,
               };
@@ -1665,6 +1689,9 @@ fn start_connect_device_inner(
                 if let Some(metric_message) = val.metric_message {
                     obj.set_named_property("metricMessage", env.create_string(&metric_message)?)?;
                 }
+                if let Some(creds_json) = val.credentials_json {
+                    obj.set_named_property("credentialsJson", env.create_string(&creds_json)?)?;
+                }
                 Ok(vec![obj.into_unknown()])
             })
         })
@@ -1725,6 +1752,7 @@ fn start_connect_device_inner(
                 session_config.client_id = client_id_override;
             }
         }
+        let client_id_for_discovery = session_config.client_id.clone();
         // Spirc::new neemt zelf de connect stap; we maken hier alleen een verse session.
         let session = Session::new(session_config.clone(), None);
 
@@ -1732,7 +1760,6 @@ fn start_connect_device_inner(
             name: name.clone(),
             device_type: DeviceType::Speaker,
             is_group: false,
-            emit_set_queue_events: false,
             // Start with full volume so we rely on zone-side volume control; we do not sync Spotify volume.
             // Spotify volume scale is 0..65535; use max to avoid muted start.
             initial_volume: u16::MAX,
@@ -1792,6 +1819,8 @@ fn start_connect_device_inner(
         };
 
         let player = Player::new(player_config, session.clone(), volume_getter, sink_builder);
+        // Clone log_tsfn before it is moved into the player-event spawn below.
+        let log_tsfn_for_disc = log_tsfn.clone();
         // Forward player events to JS if requested.
         if let Some(tsfn_ev) = event_tsfn.clone() {
             let mut ev_rx = player.get_player_event_channel();
@@ -1846,6 +1875,7 @@ fn start_connect_device_inner(
                             metric_name: Some("buffer_stall_ms".into()),
                             metric_value_ms: Some(stall_ms_u32),
                             metric_message: Some("pcm stalled".into()),
+                            credentials_json: None,
                         };
                         let _ = tsfn_health
                             .call(metric_payload, ThreadsafeFunctionCallMode::NonBlocking);
@@ -1867,6 +1897,7 @@ fn start_connect_device_inner(
                         metric_name: None,
                         metric_value_ms: None,
                         metric_message: None,
+                        credentials_json: None,
                     };
                     let _ = tsfn_health.call(payload, ThreadsafeFunctionCallMode::NonBlocking);
                 }
@@ -1934,8 +1965,8 @@ fn start_connect_device_inner(
                             r#type: "playing".into(),
                             device_id: Some(device_id_for_events.clone()),
                             session_id: Some(session_id_for_events.clone()),
-                            track_id: Some(track_id.to_id()),
-                            uri: Some(track_id.to_uri()),
+                            track_id: track_id.to_id().ok(),
+                            uri: track_id.to_uri().ok(),
                             title: None,
                             artist: None,
                             album: None,
@@ -1947,6 +1978,7 @@ fn start_connect_device_inner(
                             metric_name: None,
                             metric_value_ms: None,
                             metric_message: None,
+                            credentials_json: None,
                         },
                         PlayerEvent::Paused {
                             track_id,
@@ -1956,8 +1988,8 @@ fn start_connect_device_inner(
                             r#type: "paused".into(),
                             device_id: Some(device_id_for_events.clone()),
                             session_id: Some(session_id_for_events.clone()),
-                            track_id: Some(track_id.to_id()),
-                            uri: Some(track_id.to_uri()),
+                            track_id: track_id.to_id().ok(),
+                            uri: track_id.to_uri().ok(),
                             title: None,
                             artist: None,
                             album: None,
@@ -1969,6 +2001,7 @@ fn start_connect_device_inner(
                             metric_name: None,
                             metric_value_ms: None,
                             metric_message: None,
+                            credentials_json: None,
                         },
                         PlayerEvent::Loading {
                             track_id,
@@ -1978,8 +2011,8 @@ fn start_connect_device_inner(
                             r#type: "loading".into(),
                             device_id: Some(device_id_for_events.clone()),
                             session_id: Some(session_id_for_events.clone()),
-                            track_id: Some(track_id.to_id()),
-                            uri: Some(track_id.to_uri()),
+                            track_id: track_id.to_id().ok(),
+                            uri: track_id.to_uri().ok(),
                             title: None,
                             artist: None,
                             album: None,
@@ -1991,13 +2024,14 @@ fn start_connect_device_inner(
                             metric_name: None,
                             metric_value_ms: None,
                             metric_message: None,
+                            credentials_json: None,
                         },
                         PlayerEvent::Stopped { track_id, .. } => ConnectEvent {
                             r#type: "stopped".into(),
                             device_id: Some(device_id_for_events.clone()),
                             session_id: Some(session_id_for_events.clone()),
-                            track_id: Some(track_id.to_id()),
-                            uri: Some(track_id.to_uri()),
+                            track_id: track_id.to_id().ok(),
+                            uri: track_id.to_uri().ok(),
                             title: None,
                             artist: None,
                             album: None,
@@ -2009,6 +2043,7 @@ fn start_connect_device_inner(
                             metric_name: None,
                             metric_value_ms: None,
                             metric_message: None,
+                            credentials_json: None,
                         },
                         PlayerEvent::EndOfTrack { track_id, .. } => {
                             if !saw_playing || last_duration_ms.is_none() {
@@ -2018,8 +2053,8 @@ fn start_connect_device_inner(
                                 r#type: "end_of_track".into(),
                                 device_id: Some(device_id_for_events.clone()),
                                 session_id: Some(session_id_for_events.clone()),
-                                track_id: Some(track_id.to_id()),
-                                uri: Some(track_id.to_uri()),
+                                track_id: track_id.to_id().ok(),
+                                uri: track_id.to_uri().ok(),
                                 title: None,
                                 artist: None,
                                 album: None,
@@ -2031,14 +2066,15 @@ fn start_connect_device_inner(
                                 metric_name: None,
                                 metric_value_ms: None,
                                 metric_message: None,
+                                credentials_json: None,
                             }
                         }
                         PlayerEvent::Unavailable { track_id, .. } => ConnectEvent {
                             r#type: "unavailable".into(),
                             device_id: Some(device_id_for_events.clone()),
                             session_id: Some(session_id_for_events.clone()),
-                            track_id: Some(track_id.to_id()),
-                            uri: Some(track_id.to_uri()),
+                            track_id: track_id.to_id().ok(),
+                            uri: track_id.to_uri().ok(),
                             title: None,
                             artist: None,
                             album: None,
@@ -2050,6 +2086,7 @@ fn start_connect_device_inner(
                             metric_name: None,
                             metric_value_ms: None,
                             metric_message: None,
+                            credentials_json: None,
                         },
                         PlayerEvent::VolumeChanged { volume } => ConnectEvent {
                             r#type: "volume".into(),
@@ -2068,6 +2105,7 @@ fn start_connect_device_inner(
                             metric_name: None,
                             metric_value_ms: None,
                             metric_message: None,
+                            credentials_json: None,
                         },
                         PlayerEvent::PositionCorrection {
                             track_id,
@@ -2077,8 +2115,8 @@ fn start_connect_device_inner(
                             r#type: "position_correction".into(),
                             device_id: Some(device_id_for_events.clone()),
                             session_id: Some(session_id_for_events.clone()),
-                            track_id: Some(track_id.to_id()),
-                            uri: Some(track_id.to_uri()),
+                            track_id: track_id.to_id().ok(),
+                            uri: track_id.to_uri().ok(),
                             title: None,
                             artist: None,
                             album: None,
@@ -2090,6 +2128,7 @@ fn start_connect_device_inner(
                             metric_name: None,
                             metric_value_ms: None,
                             metric_message: None,
+                            credentials_json: None,
                         },
                         _ => continue,
                     };
@@ -2181,6 +2220,108 @@ fn start_connect_device_inner(
         )
         .await
         .map_err(|e| Error::from_reason(format!("spirc start failed: {e}")))?;
+
+        // Launch mDNS Discovery so the device is visible to ALL Spotify users on the LAN,
+        // not just the owner of the credentials used to start the connect host. This is the
+        // same mechanism hardware devices (Sonos, Onkyo, etc.) use. When a different user
+        // connects via mDNS, their credentials are emitted as a "credentials_changed" event
+        // so the JS layer can restart the connect host under the new account.
+        match Discovery::builder(device_id.clone(), client_id_for_discovery)
+            .name(name.clone())
+            .device_type(DeviceType::Speaker)
+            .launch()
+        {
+            Ok(mut discovery) => {
+                emit_log_ctx(
+                    &log_tsfn_for_disc,
+                    "info",
+                    "mDNS discovery started; device is now visible to all Spotify users on the LAN",
+                    Some("connect_host"),
+                    Some(&device_id),
+                    Some(&session_id),
+                );
+                let event_tsfn_disc = event_tsfn.clone();
+                let log_tsfn_disc = log_tsfn_for_disc.clone();
+                let stop_flag_disc = stop_flag_for_block.clone();
+                let device_id_disc = device_id.clone();
+                let session_id_disc = session_id.clone();
+                runtime().spawn(async move {
+                    loop {
+                        if stop_flag_disc.load(Ordering::Acquire) {
+                            break;
+                        }
+                        match tokio::time::timeout(
+                            Duration::from_secs(2),
+                            discovery.next(),
+                        )
+                        .await
+                        {
+                            Ok(None) => break,
+                            Ok(Some(creds)) => {
+                                match serde_json::to_string_pretty(&creds) {
+                                    Ok(json) => {
+                                        emit_log_ctx(
+                                            &log_tsfn_disc,
+                                            "info",
+                                            "mDNS: new Spotify user connected; emitting credentials_changed",
+                                            Some("connect_host"),
+                                            Some(&device_id_disc),
+                                            Some(&session_id_disc),
+                                        );
+                                        if let Some(ref tsfn) = event_tsfn_disc {
+                                            let payload = ConnectEvent {
+                                                r#type: "credentials_changed".into(),
+                                                credentials_json: Some(json),
+                                                device_id: Some(device_id_disc.clone()),
+                                                session_id: Some(session_id_disc.clone()),
+                                                track_id: None,
+                                                uri: None,
+                                                title: None,
+                                                artist: None,
+                                                album: None,
+                                                duration_ms: None,
+                                                position_ms: None,
+                                                volume: None,
+                                                error_code: None,
+                                                error_message: None,
+                                                metric_name: None,
+                                                metric_value_ms: None,
+                                                metric_message: None,
+                                            };
+                                            let _ = tsfn.call(payload, ThreadsafeFunctionCallMode::NonBlocking);
+                                        }
+                                        break;
+                                    }
+                                    Err(e) => {
+                                        emit_log_ctx(
+                                            &log_tsfn_disc,
+                                            "warn",
+                                            &format!("mDNS: failed to serialize new credentials: {e}"),
+                                            Some("connect_host"),
+                                            Some(&device_id_disc),
+                                            Some(&session_id_disc),
+                                        );
+                                    }
+                                }
+                            }
+                            Err(_timeout) => {
+                                // No new connection in this window; loop and check stop flag.
+                            }
+                        }
+                    }
+                });
+            }
+            Err(e) => {
+                emit_log_ctx(
+                    &log_tsfn_for_disc,
+                    "warn",
+                    &format!("mDNS discovery failed to start (device only visible to owner account): {e}"),
+                    Some("connect_host"),
+                    Some(&device_id),
+                    Some(&session_id),
+                );
+            }
+        }
 
         let (stop_tx, mut stop_rx) = mpsc::channel::<()>(1);
         let task_handle = runtime().spawn(async move {

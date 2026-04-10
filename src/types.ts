@@ -50,6 +50,7 @@ export type LibrespotEventType =
   | 'preloading'
   | 'time_to_preload'
   | 'play_request_id'
+  | 'credentials_changed'
   | 'other';
 
 export type LibrespotErrorCode =
@@ -80,6 +81,7 @@ export interface ConnectEvent {
   metricName?: string;
   metricValueMs?: number;
   metricMessage?: string;
+  credentialsJson?: string;
 }
 
 /** Log payload emitted by the native module. */
