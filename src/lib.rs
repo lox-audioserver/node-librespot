@@ -12,8 +12,8 @@ use bytes::Bytes;
 use librespot_audio::{AudioDecrypt, AudioFile};
 use librespot_connect::{ConnectConfig, Spirc};
 use librespot_core::{
-    authentication::Credentials, cache::Cache, config::SessionConfig, session::Session, SpotifyId,
-    SpotifyUri, spotify_id::FileId,
+    authentication::Credentials, cache::Cache, config::SessionConfig, session::Session,
+    spotify_id::FileId, SpotifyId, SpotifyUri,
 };
 use librespot_discovery::{DeviceType, Discovery};
 use librespot_metadata::audio::{AudioFileFormat, AudioFiles, AudioItem};
@@ -63,9 +63,9 @@ fn normalize_collection_parse_warning(event: &mut LogEvent) -> bool {
         return false;
     }
     let message = event.message.to_lowercase();
-    let looks_like_collection_parse_noise =
-        message.contains("failure during data parsing for hm://collection/collection/")
-            && message.contains("base64 decoding failed");
+    let looks_like_collection_parse_noise = message
+        .contains("failure during data parsing for hm://collection/collection/")
+        && message.contains("base64 decoding failed");
     if !looks_like_collection_parse_noise {
         return false;
     }
@@ -77,7 +77,8 @@ fn normalize_collection_parse_warning(event: &mut LogEvent) -> bool {
     }
     COLLECTION_PARSE_LOG_NEXT_AT_MS.store(now + 60_000, Ordering::Relaxed);
     event.level = "debug".to_string();
-    event.message = "suppressed recurring dealer parse warning for hm://collection payload".to_string();
+    event.message =
+        "suppressed recurring dealer parse warning for hm://collection payload".to_string();
     false
 }
 
@@ -693,10 +694,7 @@ impl LibrespotSession {
                         )?;
                     }
                     if let Some(creds_json) = val.credentials_json {
-                        obj.set_named_property(
-                            "credentialsJson",
-                            env.create_string(&creds_json)?,
-                        )?;
+                        obj.set_named_property("credentialsJson", env.create_string(&creds_json)?)?;
                     }
                     Ok(vec![obj.into_unknown()])
                 })
@@ -764,7 +762,7 @@ impl LibrespotSession {
         let error_sent = Arc::new(AtomicBool::new(false));
         let decoder_metric_sent = Arc::new(AtomicBool::new(false));
         let stop_flag = Arc::new(AtomicBool::new(false));
-        let track_id_for_events = spotify_uri.to_id().ok().unwrap_or_default();
+        let track_id_for_events = spotify_uri.to_id();
         let track_id_for_sink = track_id_for_events.clone();
         let uri_for_sink = uri.clone();
         let backend_factory = {
@@ -1129,8 +1127,8 @@ impl LibrespotSession {
                   r#type: "playing".into(),
                   device_id: Some(device_id_for_events.clone()),
                   session_id: Some(session_id_for_events.clone()),
-                  track_id: track_id.to_id().ok(),
-                  uri: track_id.to_uri().ok(),
+                  track_id: Some(track_id.to_id()),
+                  uri: Some(track_id.to_uri()),
                   title: None,
                   artist: None,
                   album: None,
@@ -1148,8 +1146,8 @@ impl LibrespotSession {
                   r#type: "paused".into(),
                   device_id: Some(device_id_for_events.clone()),
                   session_id: Some(session_id_for_events.clone()),
-                  track_id: track_id.to_id().ok(),
-                  uri: track_id.to_uri().ok(),
+                  track_id: Some(track_id.to_id()),
+                  uri: Some(track_id.to_uri()),
                   title: None,
                   artist: None,
                   album: None,
@@ -1167,8 +1165,8 @@ impl LibrespotSession {
                   r#type: "loading".into(),
                   device_id: Some(device_id_for_events.clone()),
                   session_id: Some(session_id_for_events.clone()),
-                  track_id: track_id.to_id().ok(),
-                  uri: track_id.to_uri().ok(),
+                  track_id: Some(track_id.to_id()),
+                  uri: Some(track_id.to_uri()),
                   title: None,
                   artist: None,
                   album: None,
@@ -1186,8 +1184,8 @@ impl LibrespotSession {
                   r#type: "stopped".into(),
                   device_id: Some(device_id_for_events.clone()),
                   session_id: Some(session_id_for_events.clone()),
-                  track_id: track_id.to_id().ok(),
-                  uri: track_id.to_uri().ok(),
+                  track_id: Some(track_id.to_id()),
+                  uri: Some(track_id.to_uri()),
                   title: None,
                   artist: None,
                   album: None,
@@ -1204,13 +1202,13 @@ impl LibrespotSession {
                 PlayerEvent::EndOfTrack { track_id, .. } => {
                   if !saw_playing || last_duration_ms.is_none() {
                     if !error_sent_for_spawn.swap(true, Ordering::AcqRel) {
-                      let fallback_id = track_id.to_id().ok();
+                      let fallback_id = Some(track_id.to_id());
                       let payload = ConnectEvent {
                         r#type: "error".into(),
                         device_id: Some(device_id_for_events.clone()),
                         session_id: Some(session_id_for_events.clone()),
                         track_id: fallback_id,
-                        uri: track_id.to_uri().ok(),
+                        uri: Some(track_id.to_uri()),
                         title: None,
                         artist: None,
                         album: None,
@@ -1232,8 +1230,8 @@ impl LibrespotSession {
                     r#type: "end_of_track".into(),
                     device_id: Some(device_id_for_events.clone()),
                     session_id: Some(session_id_for_events.clone()),
-                    track_id: track_id.to_id().ok(),
-                    uri: track_id.to_uri().ok(),
+                    track_id: Some(track_id.to_id()),
+                    uri: Some(track_id.to_uri()),
                     title: None,
                     artist: None,
                     album: None,
@@ -1252,8 +1250,8 @@ impl LibrespotSession {
                   r#type: "unavailable".into(),
                   device_id: Some(device_id_for_events.clone()),
                   session_id: Some(session_id_for_events.clone()),
-                  track_id: track_id.to_id().ok(),
-                  uri: track_id.to_uri().ok(),
+                  track_id: Some(track_id.to_id()),
+                  uri: Some(track_id.to_uri()),
                   title: None,
                   artist: None,
                   album: None,
@@ -1290,8 +1288,8 @@ impl LibrespotSession {
                   r#type: "position_correction".into(),
                   device_id: Some(device_id_for_events.clone()),
                   session_id: Some(session_id_for_events.clone()),
-                  track_id: track_id.to_id().ok(),
-                  uri: track_id.to_uri().ok(),
+                  track_id: Some(track_id.to_id()),
+                  uri: Some(track_id.to_uri()),
                   title: None,
                   artist: None,
                   album: None,
@@ -1416,64 +1414,61 @@ impl LibrespotSession {
             .try_into()
             .map_err(|e| Error::from_reason(format!("invalid spotify id: {e:?}")))?;
 
-        let (encrypted_file, key) = runtime()
-            .block_on(async {
-                let audio_item = AudioItem::get_file(&session, spotify_uri.clone())
-                    .await
-                    .map_err(|e| Error::from_reason(format!("failed to load audio item: {e:?}")))?;
+        let (encrypted_file, key) = runtime().block_on(async {
+            let audio_item = AudioItem::get_file(&session, spotify_uri.clone())
+                .await
+                .map_err(|e| Error::from_reason(format!("failed to load audio item: {e:?}")))?;
 
-                let select_format =
-                    |files: &AudioFiles, bitrate: Option<u32>| -> Option<(AudioFileFormat, FileId)> {
-                        let prefer = match bitrate {
-                            Some(96) => {
-                                vec![AudioFileFormat::OGG_VORBIS_96, AudioFileFormat::MP3_96]
-                            }
-                            Some(160) => {
-                                vec![AudioFileFormat::OGG_VORBIS_160, AudioFileFormat::MP3_160]
-                            }
-                            _ => vec![
-                                AudioFileFormat::OGG_VORBIS_320,
-                                AudioFileFormat::MP3_320,
-                                AudioFileFormat::MP3_256,
-                            ],
-                        };
-                        for f in prefer {
-                            if let Some(id) = files.get(&f) {
-                                return Some((f, *id));
-                            }
+            let select_format =
+                |files: &AudioFiles, bitrate: Option<u32>| -> Option<(AudioFileFormat, FileId)> {
+                    let prefer = match bitrate {
+                        Some(96) => {
+                            vec![AudioFileFormat::OGG_VORBIS_96, AudioFileFormat::MP3_96]
                         }
-                        files.iter().next().map(|(f, id)| (*f, *id))
+                        Some(160) => {
+                            vec![AudioFileFormat::OGG_VORBIS_160, AudioFileFormat::MP3_160]
+                        }
+                        _ => vec![
+                            AudioFileFormat::OGG_VORBIS_320,
+                            AudioFileFormat::MP3_320,
+                            AudioFileFormat::MP3_256,
+                        ],
                     };
-
-                let (format, file_id) = select_format(&audio_item.files, bitrate_pref)
-                    .ok_or_else(|| Error::from_reason("no audio files available"))?;
-
-                let bytes_per_second = stream_data_rate(format)
-                    .ok_or_else(|| Error::from_reason("unable to compute data rate"))?;
-
-                let encrypted_file = AudioFile::open(&session, file_id, bytes_per_second)
-                    .await
-                    .map_err(|e| {
-                        Error::from_reason(format!("failed to open audio file: {e:?}"))
-                    })?;
-
-                let key = match session.audio_key().request(track_id, file_id).await {
-                    Ok(key) => Some(key),
-                    Err(e) => {
-                        emit_log_ctx(
-                            &log_tsfn,
-                            "warn",
-                            format!("audio key unavailable, continuing without decryption: {e:?}"),
-                            Some("download_track"),
-                            None,
-                            None,
-                        );
-                        None
+                    for f in prefer {
+                        if let Some(id) = files.get(&f) {
+                            return Some((f, *id));
+                        }
                     }
+                    files.iter().next().map(|(f, id)| (*f, *id))
                 };
 
-                Ok::<_, Error>((encrypted_file, key))
-            })?;
+            let (format, file_id) = select_format(&audio_item.files, bitrate_pref)
+                .ok_or_else(|| Error::from_reason("no audio files available"))?;
+
+            let bytes_per_second = stream_data_rate(format)
+                .ok_or_else(|| Error::from_reason("unable to compute data rate"))?;
+
+            let encrypted_file = AudioFile::open(&session, file_id, bytes_per_second)
+                .await
+                .map_err(|e| Error::from_reason(format!("failed to open audio file: {e:?}")))?;
+
+            let key = match session.audio_key().request(track_id, file_id).await {
+                Ok(key) => Some(key),
+                Err(e) => {
+                    emit_log_ctx(
+                        &log_tsfn,
+                        "warn",
+                        format!("audio key unavailable, continuing without decryption: {e:?}"),
+                        Some("download_track"),
+                        None,
+                        None,
+                    );
+                    None
+                }
+            };
+
+            Ok::<_, Error>((encrypted_file, key))
+        })?;
 
         let stop_flag_clone = stop_flag.clone();
         let log_tsfn_clone = log_tsfn.clone();
@@ -1765,6 +1760,7 @@ fn start_connect_device_inner(
             initial_volume: u16::MAX,
             disable_volume: false,
             volume_steps: 64,
+            emit_set_queue_events: false,
         };
 
         let player_config = PlayerConfig::default();
@@ -1965,8 +1961,8 @@ fn start_connect_device_inner(
                             r#type: "playing".into(),
                             device_id: Some(device_id_for_events.clone()),
                             session_id: Some(session_id_for_events.clone()),
-                            track_id: track_id.to_id().ok(),
-                            uri: track_id.to_uri().ok(),
+                            track_id: Some(track_id.to_id()),
+                            uri: Some(track_id.to_uri()),
                             title: None,
                             artist: None,
                             album: None,
@@ -1988,8 +1984,8 @@ fn start_connect_device_inner(
                             r#type: "paused".into(),
                             device_id: Some(device_id_for_events.clone()),
                             session_id: Some(session_id_for_events.clone()),
-                            track_id: track_id.to_id().ok(),
-                            uri: track_id.to_uri().ok(),
+                            track_id: Some(track_id.to_id()),
+                            uri: Some(track_id.to_uri()),
                             title: None,
                             artist: None,
                             album: None,
@@ -2011,8 +2007,8 @@ fn start_connect_device_inner(
                             r#type: "loading".into(),
                             device_id: Some(device_id_for_events.clone()),
                             session_id: Some(session_id_for_events.clone()),
-                            track_id: track_id.to_id().ok(),
-                            uri: track_id.to_uri().ok(),
+                            track_id: Some(track_id.to_id()),
+                            uri: Some(track_id.to_uri()),
                             title: None,
                             artist: None,
                             album: None,
@@ -2030,8 +2026,8 @@ fn start_connect_device_inner(
                             r#type: "stopped".into(),
                             device_id: Some(device_id_for_events.clone()),
                             session_id: Some(session_id_for_events.clone()),
-                            track_id: track_id.to_id().ok(),
-                            uri: track_id.to_uri().ok(),
+                            track_id: Some(track_id.to_id()),
+                            uri: Some(track_id.to_uri()),
                             title: None,
                             artist: None,
                             album: None,
@@ -2053,8 +2049,8 @@ fn start_connect_device_inner(
                                 r#type: "end_of_track".into(),
                                 device_id: Some(device_id_for_events.clone()),
                                 session_id: Some(session_id_for_events.clone()),
-                                track_id: track_id.to_id().ok(),
-                                uri: track_id.to_uri().ok(),
+                                track_id: Some(track_id.to_id()),
+                                uri: Some(track_id.to_uri()),
                                 title: None,
                                 artist: None,
                                 album: None,
@@ -2073,8 +2069,8 @@ fn start_connect_device_inner(
                             r#type: "unavailable".into(),
                             device_id: Some(device_id_for_events.clone()),
                             session_id: Some(session_id_for_events.clone()),
-                            track_id: track_id.to_id().ok(),
-                            uri: track_id.to_uri().ok(),
+                            track_id: Some(track_id.to_id()),
+                            uri: Some(track_id.to_uri()),
                             title: None,
                             artist: None,
                             album: None,
@@ -2115,8 +2111,8 @@ fn start_connect_device_inner(
                             r#type: "position_correction".into(),
                             device_id: Some(device_id_for_events.clone()),
                             session_id: Some(session_id_for_events.clone()),
-                            track_id: track_id.to_id().ok(),
-                            uri: track_id.to_uri().ok(),
+                            track_id: Some(track_id.to_id()),
+                            uri: Some(track_id.to_uri()),
                             title: None,
                             artist: None,
                             album: None,
@@ -2428,8 +2424,7 @@ pub fn start_connect_device_with_token(
                     epoch_ms,
                     std::process::id()
                 ));
-                fs::create_dir_all(&temp_dir)
-                    .map_err(|e| Error::from_reason(format!("{e}")))?;
+                fs::create_dir_all(&temp_dir).map_err(|e| Error::from_reason(format!("{e}")))?;
                 let cache = Cache::new(
                     Some(&temp_dir),
                     None::<&std::path::PathBuf>,
@@ -2444,9 +2439,9 @@ pub fn start_connect_device_with_token(
                     .await
                     .map_err(|e| Error::from_reason(format!("session connect failed: {e}")))?;
 
-                let reusable_credentials = cache
-                    .credentials()
-                    .ok_or_else(|| Error::from_reason("no reusable credentials after oauth login"))?;
+                let reusable_credentials = cache.credentials().ok_or_else(|| {
+                    Error::from_reason("no reusable credentials after oauth login")
+                })?;
 
                 drop(session);
                 let _ = fs::remove_dir_all(&temp_dir);
