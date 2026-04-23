@@ -2207,6 +2207,78 @@ fn start_connect_device_inner(
             });
         }
 
+        // Log observer: detect audio_key_error and decoder errors from librespot log output.
+        // This mirrors the same pattern used in stream_track to ensure the JS layer receives
+        // error events and can trigger recovery (e.g. re-authentication, skip to next track).
+        if let Some(tsfn_ev) = event_tsfn.clone() {
+            let mut log_rx = subscribe_log_events();
+            let error_sent = Arc::new(AtomicBool::new(false));
+            let decoder_metric_sent = Arc::new(AtomicBool::new(false));
+            let stop_flag_for_logs = stop_flag_for_block.clone();
+            let device_id_for_logs = device_id.clone();
+            let session_id_for_logs = session_id.clone();
+            runtime().spawn(async move {
+                while let Some(event) = log_rx.recv().await {
+                    if stop_flag_for_logs.load(Ordering::Acquire) {
+                        break;
+                    }
+                    if is_decoder_error(&event) {
+                        if !decoder_metric_sent.swap(true, Ordering::AcqRel) {
+                            let payload = ConnectEvent {
+                                r#type: "metric".into(),
+                                device_id: Some(device_id_for_logs.clone()),
+                                session_id: Some(session_id_for_logs.clone()),
+                                track_id: None,
+                                uri: None,
+                                title: None,
+                                artist: None,
+                                album: None,
+                                duration_ms: None,
+                                position_ms: None,
+                                volume: None,
+                                error_code: None,
+                                error_message: None,
+                                metric_name: Some("decode_error".into()),
+                                metric_value_ms: None,
+                                metric_message: Some(event.message.clone()),
+                                credentials_json: None,
+                            };
+                            let _ = tsfn_ev.call(payload, ThreadsafeFunctionCallMode::NonBlocking);
+                        }
+                    }
+                    if error_sent.load(Ordering::Acquire) {
+                        continue;
+                    }
+                    if !is_audio_key_error(&event) {
+                        continue;
+                    }
+                    if error_sent.swap(true, Ordering::AcqRel) {
+                        continue;
+                    }
+                    let payload = ConnectEvent {
+                        r#type: "error".into(),
+                        device_id: Some(device_id_for_logs.clone()),
+                        session_id: Some(session_id_for_logs.clone()),
+                        track_id: None,
+                        uri: None,
+                        title: None,
+                        artist: None,
+                        album: None,
+                        duration_ms: None,
+                        position_ms: None,
+                        volume: None,
+                        error_code: Some("audio_key_error".into()),
+                        error_message: Some(event.message.clone()),
+                        metric_name: None,
+                        metric_value_ms: None,
+                        metric_message: None,
+                        credentials_json: None,
+                    };
+                    let _ = tsfn_ev.call(payload, ThreadsafeFunctionCallMode::NonBlocking);
+                }
+            });
+        }
+
         let (spirc, spirc_task) = Spirc::new(
             connect_config,
             session,
