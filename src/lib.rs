@@ -120,6 +120,12 @@ pub struct CreateSessionOpts {
     pub access_token: Option<String>,
     pub client_id: Option<String>,
     pub device_name: Option<String>,
+    /// Directory for the librespot audio file cache.  When set, decoded audio
+    /// is written here so subsequent plays avoid a CDN round-trip.
+    pub cache_dir: Option<String>,
+    /// Maximum size of the audio cache in megabytes.  Only used when
+    /// `cache_dir` is set.  None means no size limit is enforced.
+    pub cache_size_limit_mb: Option<u32>,
 }
 
 /// Options for streaming a track.
@@ -762,7 +768,7 @@ impl LibrespotSession {
         let error_sent = Arc::new(AtomicBool::new(false));
         let decoder_metric_sent = Arc::new(AtomicBool::new(false));
         let stop_flag = Arc::new(AtomicBool::new(false));
-        let track_id_for_events = spotify_uri.to_id();
+        let track_id_for_events = spotify_uri.to_id().unwrap_or_default();
         let track_id_for_sink = track_id_for_events.clone();
         let uri_for_sink = uri.clone();
         let backend_factory = {
@@ -1127,8 +1133,8 @@ impl LibrespotSession {
                   r#type: "playing".into(),
                   device_id: Some(device_id_for_events.clone()),
                   session_id: Some(session_id_for_events.clone()),
-                  track_id: Some(track_id.to_id()),
-                  uri: Some(track_id.to_uri()),
+                  track_id: Some(track_id.to_id().unwrap_or_default()),
+                  uri: track_id.to_uri().ok(),
                   title: None,
                   artist: None,
                   album: None,
@@ -1146,8 +1152,8 @@ impl LibrespotSession {
                   r#type: "paused".into(),
                   device_id: Some(device_id_for_events.clone()),
                   session_id: Some(session_id_for_events.clone()),
-                  track_id: Some(track_id.to_id()),
-                  uri: Some(track_id.to_uri()),
+                  track_id: Some(track_id.to_id().unwrap_or_default()),
+                  uri: track_id.to_uri().ok(),
                   title: None,
                   artist: None,
                   album: None,
@@ -1165,8 +1171,8 @@ impl LibrespotSession {
                   r#type: "loading".into(),
                   device_id: Some(device_id_for_events.clone()),
                   session_id: Some(session_id_for_events.clone()),
-                  track_id: Some(track_id.to_id()),
-                  uri: Some(track_id.to_uri()),
+                  track_id: Some(track_id.to_id().unwrap_or_default()),
+                  uri: track_id.to_uri().ok(),
                   title: None,
                   artist: None,
                   album: None,
@@ -1184,8 +1190,8 @@ impl LibrespotSession {
                   r#type: "stopped".into(),
                   device_id: Some(device_id_for_events.clone()),
                   session_id: Some(session_id_for_events.clone()),
-                  track_id: Some(track_id.to_id()),
-                  uri: Some(track_id.to_uri()),
+                  track_id: Some(track_id.to_id().unwrap_or_default()),
+                  uri: track_id.to_uri().ok(),
                   title: None,
                   artist: None,
                   album: None,
@@ -1202,13 +1208,13 @@ impl LibrespotSession {
                 PlayerEvent::EndOfTrack { track_id, .. } => {
                   if !saw_playing || last_duration_ms.is_none() {
                     if !error_sent_for_spawn.swap(true, Ordering::AcqRel) {
-                      let fallback_id = Some(track_id.to_id());
+                      let fallback_id = track_id.to_id().ok();
                       let payload = ConnectEvent {
                         r#type: "error".into(),
                         device_id: Some(device_id_for_events.clone()),
                         session_id: Some(session_id_for_events.clone()),
                         track_id: fallback_id,
-                        uri: Some(track_id.to_uri()),
+                        uri: track_id.to_uri().ok(),
                         title: None,
                         artist: None,
                         album: None,
@@ -1230,8 +1236,8 @@ impl LibrespotSession {
                     r#type: "end_of_track".into(),
                     device_id: Some(device_id_for_events.clone()),
                     session_id: Some(session_id_for_events.clone()),
-                    track_id: Some(track_id.to_id()),
-                    uri: Some(track_id.to_uri()),
+                    track_id: Some(track_id.to_id().unwrap_or_default()),
+                    uri: track_id.to_uri().ok(),
                     title: None,
                     artist: None,
                     album: None,
@@ -1250,8 +1256,8 @@ impl LibrespotSession {
                   r#type: "unavailable".into(),
                   device_id: Some(device_id_for_events.clone()),
                   session_id: Some(session_id_for_events.clone()),
-                  track_id: Some(track_id.to_id()),
-                  uri: Some(track_id.to_uri()),
+                  track_id: Some(track_id.to_id().unwrap_or_default()),
+                  uri: track_id.to_uri().ok(),
                   title: None,
                   artist: None,
                   album: None,
@@ -1288,8 +1294,8 @@ impl LibrespotSession {
                   r#type: "position_correction".into(),
                   device_id: Some(device_id_for_events.clone()),
                   session_id: Some(session_id_for_events.clone()),
-                  track_id: Some(track_id.to_id()),
-                  uri: Some(track_id.to_uri()),
+                  track_id: Some(track_id.to_id().unwrap_or_default()),
+                  uri: track_id.to_uri().ok(),
                   title: None,
                   artist: None,
                   album: None,
@@ -1515,6 +1521,29 @@ impl LibrespotSession {
     }
 }
 
+/// Build a librespot `Cache` for audio file storage.
+/// Returns `None` if `cache_dir` is absent, the directory cannot be created,
+/// or `Cache::new` fails — in which case streaming still works without cache.
+fn build_audio_cache(cache_dir: Option<&str>, cache_size_limit_mb: Option<u32>) -> Option<Cache> {
+    let dir = cache_dir?;
+    if dir.trim().is_empty() {
+        return None;
+    }
+    let path = std::path::Path::new(dir);
+    if let Err(e) = fs::create_dir_all(path) {
+        eprintln!("[lox-librespot] could not create cache dir {dir}: {e}");
+        return None;
+    }
+    let size_limit = cache_size_limit_mb.map(|mb| mb as u64 * 1024 * 1024);
+    Cache::new(
+        Some(path),
+        None::<&std::path::Path>,
+        None::<&std::path::Path>,
+        size_limit,
+    )
+    .ok()
+}
+
 /// Create a session using a Web API access token (client id optional via opts or env).
 #[napi]
 pub async fn create_session(opts: CreateSessionOpts) -> Result<LibrespotSession> {
@@ -1543,7 +1572,8 @@ pub async fn create_session(opts: CreateSessionOpts) -> Result<LibrespotSession>
         }
     }
 
-    let session = Session::new(session_config, None);
+    let cache = build_audio_cache(opts.cache_dir.as_deref(), opts.cache_size_limit_mb);
+    let session = Session::new(session_config, cache);
     session
         .connect(credentials, false)
         .await
@@ -1565,6 +1595,8 @@ pub async fn create_session(opts: CreateSessionOpts) -> Result<LibrespotSession>
 pub async fn create_session_with_credentials(
     credentials_path: String,
     device_name: Option<String>,
+    cache_dir: Option<String>,
+    cache_size_limit_mb: Option<u32>,
 ) -> Result<LibrespotSession> {
     if credentials_path.trim().is_empty() {
         return Err(Error::from_reason("credentials payload is required"));
@@ -1595,7 +1627,8 @@ pub async fn create_session_with_credentials(
         }
     }
 
-    let session = Session::new(session_config, None);
+    let cache = build_audio_cache(cache_dir.as_deref(), cache_size_limit_mb);
+    let session = Session::new(session_config, cache);
     session
         .connect(credentials, false)
         .await
@@ -1760,7 +1793,6 @@ fn start_connect_device_inner(
             initial_volume: u16::MAX,
             disable_volume: false,
             volume_steps: 64,
-            emit_set_queue_events: false,
         };
 
         let player_config = PlayerConfig::default();
@@ -1961,8 +1993,8 @@ fn start_connect_device_inner(
                             r#type: "playing".into(),
                             device_id: Some(device_id_for_events.clone()),
                             session_id: Some(session_id_for_events.clone()),
-                            track_id: Some(track_id.to_id()),
-                            uri: Some(track_id.to_uri()),
+                            track_id: Some(track_id.to_id().unwrap_or_default()),
+                            uri: track_id.to_uri().ok(),
                             title: None,
                             artist: None,
                             album: None,
@@ -1984,8 +2016,8 @@ fn start_connect_device_inner(
                             r#type: "paused".into(),
                             device_id: Some(device_id_for_events.clone()),
                             session_id: Some(session_id_for_events.clone()),
-                            track_id: Some(track_id.to_id()),
-                            uri: Some(track_id.to_uri()),
+                            track_id: Some(track_id.to_id().unwrap_or_default()),
+                            uri: track_id.to_uri().ok(),
                             title: None,
                             artist: None,
                             album: None,
@@ -2007,8 +2039,8 @@ fn start_connect_device_inner(
                             r#type: "loading".into(),
                             device_id: Some(device_id_for_events.clone()),
                             session_id: Some(session_id_for_events.clone()),
-                            track_id: Some(track_id.to_id()),
-                            uri: Some(track_id.to_uri()),
+                            track_id: Some(track_id.to_id().unwrap_or_default()),
+                            uri: track_id.to_uri().ok(),
                             title: None,
                             artist: None,
                             album: None,
@@ -2026,8 +2058,8 @@ fn start_connect_device_inner(
                             r#type: "stopped".into(),
                             device_id: Some(device_id_for_events.clone()),
                             session_id: Some(session_id_for_events.clone()),
-                            track_id: Some(track_id.to_id()),
-                            uri: Some(track_id.to_uri()),
+                            track_id: Some(track_id.to_id().unwrap_or_default()),
+                            uri: track_id.to_uri().ok(),
                             title: None,
                             artist: None,
                             album: None,
@@ -2049,8 +2081,8 @@ fn start_connect_device_inner(
                                 r#type: "end_of_track".into(),
                                 device_id: Some(device_id_for_events.clone()),
                                 session_id: Some(session_id_for_events.clone()),
-                                track_id: Some(track_id.to_id()),
-                                uri: Some(track_id.to_uri()),
+                                track_id: Some(track_id.to_id().unwrap_or_default()),
+                                uri: track_id.to_uri().ok(),
                                 title: None,
                                 artist: None,
                                 album: None,
@@ -2069,8 +2101,8 @@ fn start_connect_device_inner(
                             r#type: "unavailable".into(),
                             device_id: Some(device_id_for_events.clone()),
                             session_id: Some(session_id_for_events.clone()),
-                            track_id: Some(track_id.to_id()),
-                            uri: Some(track_id.to_uri()),
+                            track_id: Some(track_id.to_id().unwrap_or_default()),
+                            uri: track_id.to_uri().ok(),
                             title: None,
                             artist: None,
                             album: None,
@@ -2111,8 +2143,8 @@ fn start_connect_device_inner(
                             r#type: "position_correction".into(),
                             device_id: Some(device_id_for_events.clone()),
                             session_id: Some(session_id_for_events.clone()),
-                            track_id: Some(track_id.to_id()),
-                            uri: Some(track_id.to_uri()),
+                            track_id: Some(track_id.to_id().unwrap_or_default()),
+                            uri: track_id.to_uri().ok(),
                             title: None,
                             artist: None,
                             album: None,
