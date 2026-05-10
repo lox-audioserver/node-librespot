@@ -120,6 +120,12 @@ pub struct CreateSessionOpts {
     pub access_token: Option<String>,
     pub client_id: Option<String>,
     pub device_name: Option<String>,
+    /// Directory for the librespot audio file cache.  When set, decoded audio
+    /// is written here so subsequent plays avoid a CDN round-trip.
+    pub cache_dir: Option<String>,
+    /// Maximum size of the audio cache in megabytes.  Only used when
+    /// `cache_dir` is set.  None means no size limit is enforced.
+    pub cache_size_limit_mb: Option<u32>,
 }
 
 /// Options for streaming a track.
@@ -1515,6 +1521,29 @@ impl LibrespotSession {
     }
 }
 
+/// Build a librespot `Cache` for audio file storage.
+/// Returns `None` if `cache_dir` is absent, the directory cannot be created,
+/// or `Cache::new` fails — in which case streaming still works without cache.
+fn build_audio_cache(cache_dir: Option<&str>, cache_size_limit_mb: Option<u32>) -> Option<Cache> {
+    let dir = cache_dir?;
+    if dir.trim().is_empty() {
+        return None;
+    }
+    let path = std::path::Path::new(dir);
+    if let Err(e) = fs::create_dir_all(path) {
+        eprintln!("[lox-librespot] could not create cache dir {dir}: {e}");
+        return None;
+    }
+    let size_limit = cache_size_limit_mb.map(|mb| mb as u64 * 1024 * 1024);
+    Cache::new(
+        Some(path),
+        None::<&std::path::Path>,
+        None::<&std::path::Path>,
+        size_limit,
+    )
+    .ok()
+}
+
 /// Create a session using a Web API access token (client id optional via opts or env).
 #[napi]
 pub async fn create_session(opts: CreateSessionOpts) -> Result<LibrespotSession> {
@@ -1543,7 +1572,8 @@ pub async fn create_session(opts: CreateSessionOpts) -> Result<LibrespotSession>
         }
     }
 
-    let session = Session::new(session_config, None);
+    let cache = build_audio_cache(opts.cache_dir.as_deref(), opts.cache_size_limit_mb);
+    let session = Session::new(session_config, cache);
     session
         .connect(credentials, false)
         .await
@@ -1565,6 +1595,8 @@ pub async fn create_session(opts: CreateSessionOpts) -> Result<LibrespotSession>
 pub async fn create_session_with_credentials(
     credentials_path: String,
     device_name: Option<String>,
+    cache_dir: Option<String>,
+    cache_size_limit_mb: Option<u32>,
 ) -> Result<LibrespotSession> {
     if credentials_path.trim().is_empty() {
         return Err(Error::from_reason("credentials payload is required"));
@@ -1595,7 +1627,8 @@ pub async fn create_session_with_credentials(
         }
     }
 
-    let session = Session::new(session_config, None);
+    let cache = build_audio_cache(cache_dir.as_deref(), cache_size_limit_mb);
+    let session = Session::new(session_config, cache);
     session
         .connect(credentials, false)
         .await

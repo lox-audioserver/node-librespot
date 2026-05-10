@@ -70,6 +70,8 @@ const native = require(resolveNativeBinding()) as {
   createSessionWithCredentials(
     credentialsPath: string,
     deviceName?: string | null,
+    cacheDir?: string | null,
+    cacheSizeLimitMb?: number | null,
   ): Promise<LibrespotSession>;
   setLogLevel(level: string): void;
   loginWithAccessToken(
@@ -148,20 +150,24 @@ function wrapSession(session: LibrespotSession) {
 }
 
 export function createSession(opts: CreateSessionOpts): Promise<LibrespotSession> {
-  const nativeOpts = {
+  const nativeOpts: CreateSessionOpts = {
     accessToken: (opts as any).accessToken ?? (opts as any).access_token,
     clientId: (opts as any).clientId ?? (opts as any).client_id,
     deviceName: (opts as any).deviceName ?? (opts as any).device_name,
+    cacheDir: opts.cacheDir,
+    cacheSizeLimitMb: opts.cacheSizeLimitMb,
   };
-  return native.createSession(nativeOpts as CreateSessionOpts).then((sess) => wrapSession(sess) as any);
+  return native.createSession(nativeOpts).then((sess) => wrapSession(sess) as any);
 }
 
 export function createSessionWithCredentials(
   credentialsPathOrJson: string,
   deviceName?: string | null,
+  cacheDir?: string | null,
+  cacheSizeLimitMb?: number | null,
 ): Promise<LibrespotSession> {
   return native
-    .createSessionWithCredentials(credentialsPathOrJson, deviceName ?? null)
+    .createSessionWithCredentials(credentialsPathOrJson, deviceName ?? null, cacheDir ?? null, cacheSizeLimitMb ?? null)
     .then((sess) => wrapSession(sess) as any);
 }
 

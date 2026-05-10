@@ -5,6 +5,12 @@ export interface CreateSessionOpts {
   accessToken?: string;
   clientId?: string;
   deviceName?: string;
+  /** Directory for the audio file cache.  When set, decoded audio is stored so
+   *  subsequent plays of the same track skip the CDN download. */
+  cacheDir?: string;
+  /** Maximum size of the audio cache in megabytes.  Only meaningful when
+   *  `cacheDir` is set.  Omit for no limit. */
+  cacheSizeLimitMb?: number;
 }
 
 /** Options for streaming a track. */
