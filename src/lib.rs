@@ -1865,12 +1865,21 @@ fn start_connect_device_inner(
         let player = Player::new(player_config, session.clone(), volume_getter, sink_builder);
         // Clone log_tsfn before it is moved into the player-event spawn below.
         let log_tsfn_for_disc = log_tsfn.clone();
+        // [issue #252] Bumped by the player-event observer on signals that
+        // prove audio is flowing (`playing` / `position_correction`). Read by
+        // the log observer further down to suppress transient `audio_key_error`
+        // events that fire while spirc is already recovering from an
+        // account-side dealer-disconnect burst. A permanent audio-key fault
+        // never produces a healthy event, so the error still surfaces after
+        // the grace window.
+        let healthy_seq = Arc::new(AtomicU64::new(0));
         // Forward player events to JS if requested.
         if let Some(tsfn_ev) = event_tsfn.clone() {
             let mut ev_rx = player.get_player_event_channel();
             let session_for_events = session.clone();
             let device_id_for_events = device_id.clone();
             let session_id_for_events = session_id.clone();
+            let healthy_seq_for_events = healthy_seq.clone();
             let last_pcm_for_health = last_pcm_at.clone();
             let stop_flag_for_health = stop_flag_for_block.clone();
             let device_id_for_health = device_id.clone();
@@ -2250,6 +2259,13 @@ fn start_connect_device_inner(
                         _ => {}
                     }
 
+                    // [issue #252] Signal "audio is actually flowing" to the
+                    // log observer. Excludes `paused` because a paused stream
+                    // can't prove the dealer/session is healthy.
+                    if matches!(payload.r#type.as_str(), "playing" | "position_correction") {
+                        healthy_seq_for_events.fetch_add(1, Ordering::AcqRel);
+                    }
+
                     let _ = tsfn_ev.call(payload, ThreadsafeFunctionCallMode::NonBlocking);
                 }
             });
@@ -2265,6 +2281,16 @@ fn start_connect_device_inner(
             let stop_flag_for_logs = stop_flag_for_block.clone();
             let device_id_for_logs = device_id.clone();
             let session_id_for_logs = session_id.clone();
+            let healthy_seq_for_logs = healthy_seq.clone();
+            // [issue #252] Grace window before surfacing audio_key_error to JS.
+            // Account-side Spotify dealer-disconnect bursts cause every
+            // offload=false zone to emit a single audio-key-timeout log line,
+            // while spirc reconnects internally within seconds. Without this
+            // delay every burst trips the per-zone cooldown in
+            // SpotifyConnectInstance and produces ~5 minutes of unplayable
+            // state per zone. 5s is well above typical spirc recovery time
+            // and well below the cooldown window.
+            const AUDIO_KEY_GRACE_MS: u64 = 5000;
             runtime().spawn(async move {
                 while let Some(event) = log_rx.recv().await {
                     if stop_flag_for_logs.load(Ordering::Acquire) {
@@ -2322,7 +2348,28 @@ fn start_connect_device_inner(
                         metric_message: None,
                         credentials_json: None,
                     };
-                    let _ = tsfn_ev.call(payload, ThreadsafeFunctionCallMode::NonBlocking);
+                    // [issue #252] Defer the emit by AUDIO_KEY_GRACE_MS and
+                    // suppress it if a healthy event arrived in the meantime
+                    // (spirc finished its internal reconnect). Re-arm
+                    // `error_sent` on suppression so a *later* fault in the
+                    // same session can still surface.
+                    let baseline = healthy_seq_for_logs.load(Ordering::Acquire);
+                    let healthy_seq_for_check = healthy_seq_for_logs.clone();
+                    let stop_flag_for_grace = stop_flag_for_logs.clone();
+                    let error_sent_for_reset = error_sent.clone();
+                    let tsfn_ev_for_grace = tsfn_ev.clone();
+                    runtime().spawn(async move {
+                        tokio::time::sleep(Duration::from_millis(AUDIO_KEY_GRACE_MS)).await;
+                        if stop_flag_for_grace.load(Ordering::Acquire) {
+                            return;
+                        }
+                        if healthy_seq_for_check.load(Ordering::Acquire) != baseline {
+                            error_sent_for_reset.store(false, Ordering::Release);
+                            return;
+                        }
+                        let _ = tsfn_ev_for_grace
+                            .call(payload, ThreadsafeFunctionCallMode::NonBlocking);
+                    });
                 }
             });
         }
