@@ -513,6 +513,11 @@ impl Sink for ChannelSink {
     }
 
     fn stop(&mut self) -> SinkResult<()> {
+        // Reset pacing so the next start() (e.g. after Connect pause) is paced from now,
+        // not from the original stream_start. Without this the post-resume catch-up logic
+        // forwards minutes of decoded PCM at full speed.
+        self.start = None;
+        self.expected_elapsed = Duration::from_millis(0);
         Ok(())
     }
 
@@ -606,10 +611,20 @@ impl Sink for ChannelSink {
         if self.tx.try_send(bytes).is_err() {
             // Drop chunk if JS side is backpressured to avoid blocking the player thread.
         }
-        let start = self.start.get_or_insert_with(Instant::now);
-        self.expected_elapsed += duration;
-        let target = *start + self.expected_elapsed;
         let now = Instant::now();
+        // If wall-clock has drifted far ahead of our expected timeline (a pause that didn't
+        // route through stop()/start(), a decoder stall, etc.), rebase pacing onto `now`.
+        // Otherwise `sleep_dur` saturates to 0 for the duration of the gap and the sink
+        // dumps the catch-up backlog at full speed downstream.
+        if let Some(start) = self.start {
+            if now > start + self.expected_elapsed + Duration::from_millis(200) {
+                self.start = None;
+                self.expected_elapsed = Duration::from_millis(0);
+            }
+        }
+        let start = *self.start.get_or_insert(now);
+        self.expected_elapsed += duration;
+        let target = start + self.expected_elapsed;
         let sleep_dur = target.saturating_duration_since(now);
         if !sleep_dur.is_zero() {
             sleep(sleep_dur);
