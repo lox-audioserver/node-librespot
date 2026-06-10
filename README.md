@@ -6,6 +6,8 @@ Used by [lox-audioserver](https://github.com/rudyberends/lox-audioserver) to han
 
 ## Features
 - Stream a Spotify track/episode to PCM buffers (`streamTrack`) using a Web API **access token**.
+- Pull raw decrypted audio bytes (Ogg/MP3) for a track/episode without decoding (`downloadTrack`).
+- Resolve a track's signed CDN URL + AES audio key without downloading, so the caller can fetch (HTTP Range) and decrypt itself (`resolveAudioFile`).
 - Host a Spotify Connect endpoint with a Web API access token + your own Spotify app client id (`startConnectDeviceWithToken`).
 - No disk cache required; everything stays in-memory.
 - Starts Connect hosts at max volume (volume control stays on the consumer side).
@@ -17,7 +19,9 @@ npm install
 ```
 
 ## Build
-Requires Rust (stable) and `@napi-rs/cli` (installed via devDependencies).
+Requires Rust (stable) and `@napi-rs/cli` (installed via devDependencies). The
+`librespot-*` crates are pulled as pinned git dependencies (a fixed upstream
+commit), so a from-source build works on a fresh clone with no local checkout.
 ```bash
 npm run build          # release build
 # or
@@ -88,6 +92,14 @@ const download = await downloadTrack(
 );
 // download.stop() to cancel
 // Promise rejects on initial errors (invalid URI, unavailable track, key/file fetch failure).
+
+// Or resolve the CDN url + AES key without downloading (you fetch + decrypt yourself):
+const { cdnUrl, keyHex, format } = session.resolveAudioFile({ uri: 'spotify:track:...', bitrate: 320 });
+// - cdnUrl: signed, expiring CDN url for the encrypted file (GET with Range)
+// - keyHex: 16-byte AES-128 key, hex-encoded
+// - format: e.g. "OGG_VORBIS_320" or "MP3_320"
+// Decrypt with AES-128-CTR using the fixed Spotify audio IV (counter = byteOffset / 16).
+// For OGG, strip up to the first 'OggS' page (Spotify prepends a ~167-byte header).
 
 handle.stop();
 ```
