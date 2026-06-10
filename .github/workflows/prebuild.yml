@@ -17,11 +17,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
-      - name: Update librespot dev
-        run: npm run update-librespot
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -51,10 +49,11 @@ jobs:
           - os: macos-latest
             target: aarch64-apple-darwin
             platform_arch: darwin-arm64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            platform_arch: win32-x64-msvc
     steps:
       - uses: actions/checkout@v4
-      - name: Update librespot dev
-        run: npm run update-librespot
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -78,6 +77,7 @@ jobs:
           RUST_TARGET: ${{ matrix.target }}
           RUSTFLAGS: ${{ startsWith(matrix.target, 'aarch64-apple-darwin') && '-C link-arg=-Wl,-undefined,dynamic_lookup' || '' }}
           USE_ZIG: ${{ matrix.target == 'aarch64-unknown-linux-gnu' && '1' || '' }}
+        shell: bash
         run: |
           if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
             export CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc
@@ -102,8 +102,6 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v4
-      - name: Update librespot dev
-        run: npm run update-librespot
       - uses: actions/setup-node@v4
         with:
           node-version: 20
