@@ -12,6 +12,7 @@ import type {
   StreamTrackOpts,
   DownloadTrackOpts,
   DownloadHandle,
+  ResolveAudioFileResult,
 } from './types';
 
 function detectLibc(): 'gnu' | 'musl' {
@@ -144,6 +145,9 @@ function wrapSession(session: LibrespotSession) {
       };
       const handle = (session as any).streamTrack(nativeOpts, onChunk, onEvent, onLog);
       return wrapStreamHandle(handle);
+    },
+    resolveAudioFile: (opts: DownloadTrackOpts): ResolveAudioFileResult => {
+      return (session as any).resolveAudioFile({ uri: opts.uri, bitrate: opts.bitrate });
     },
     close: () => session.close(),
   };

@@ -28,6 +28,16 @@ export interface DownloadTrackOpts {
   bitrate?: number;
 }
 
+/** Result of resolving a track's CDN location + decryption key (no download). */
+export interface ResolveAudioFileResult {
+  /** Signed, expiring CDN URL for the encrypted audio file (GET with Range). */
+  cdnUrl: string;
+  /** 16-byte AES-128 audio key, hex-encoded (lowercase, 32 chars). */
+  keyHex: string;
+  /** Chosen Spotify audio format, e.g. "OGG_VORBIS_320" or "MP3_320". */
+  format: string;
+}
+
 /** Result of a credentials login flow. */
 export interface CredentialsResult {
   username: string;
@@ -120,6 +130,8 @@ export interface LibrespotSession {
     onEvent?: (event: ConnectEvent) => void,
     onLog?: (event: LogEvent) => void,
   ): StreamHandle;
+  /** Resolve CDN URL + AES key for a track without downloading audio. */
+  resolveAudioFile(opts: DownloadTrackOpts): ResolveAudioFileResult;
   close(): Promise<void>;
 }
 

@@ -12,8 +12,8 @@ use bytes::Bytes;
 use librespot_audio::{AudioDecrypt, AudioFile};
 use librespot_connect::{ConnectConfig, Spirc};
 use librespot_core::{
-    authentication::Credentials, cache::Cache, config::SessionConfig, session::Session,
-    spotify_id::FileId, SpotifyId, SpotifyUri,
+    authentication::Credentials, cache::Cache, cdn_url::CdnUrl, config::SessionConfig,
+    session::Session, spotify_id::FileId, SpotifyId, SpotifyUri,
 };
 use librespot_discovery::{DeviceType, Discovery};
 use librespot_metadata::audio::{AudioFileFormat, AudioFiles, AudioItem};
@@ -142,6 +142,19 @@ pub struct StreamTrackOpts {
 pub struct DownloadTrackOpts {
     pub uri: String,
     pub bitrate: Option<u32>,
+}
+
+/// Result of resolving a track's CDN location + decryption key, without
+/// downloading or decrypting any audio. Lets the caller fetch the signed
+/// (expiring) CDN URL directly with HTTP Range and AES-128-CTR decrypt itself.
+#[napi(object)]
+pub struct ResolveAudioFileResult {
+    /// Signed, expiring CDN URL for the encrypted audio file (GET with Range).
+    pub cdn_url: String,
+    /// 16-byte AES-128 audio key, hex-encoded (lowercase, 32 chars).
+    pub key_hex: String,
+    /// Chosen Spotify audio format, e.g. "OGG_VORBIS_320" or "MP3_320".
+    pub format: String,
 }
 
 /// Result of a credentials login flow.
@@ -1352,6 +1365,84 @@ impl LibrespotSession {
             sample_rate: 44100,
             channels: 2,
             event_tsfn,
+        })
+    }
+
+    /// Resolve a track's signed CDN URL + AES audio key WITHOUT downloading or
+    /// decrypting any audio. The caller fetches the CDN URL directly (HTTP Range
+    /// supported) and decrypts with AES-128-CTR (fixed Spotify IV, counter =
+    /// byte_offset / 16). For OGG, strip up to the first `OggS` page before
+    /// decoding (Spotify prepends a ~167-byte header).
+    #[napi]
+    pub fn resolve_audio_file(&self, opts: DownloadTrackOpts) -> Result<ResolveAudioFileResult> {
+        let uri = opts.uri.clone();
+        if uri.is_empty() {
+            return Err(Error::from_reason("uri is required"));
+        }
+        let spotify_uri = SpotifyUri::from_uri(&uri)
+            .map_err(|e| Error::from_reason(format!("invalid spotify uri: {:?}", e)))?;
+        let track_id: SpotifyId = (&spotify_uri)
+            .try_into()
+            .map_err(|e| Error::from_reason(format!("invalid spotify id: {e:?}")))?;
+
+        let session = self.session.clone();
+        let bitrate_pref = opts.bitrate;
+
+        runtime().block_on(async move {
+            let audio_item = AudioItem::get_file(&session, spotify_uri.clone())
+                .await
+                .map_err(|e| Error::from_reason(format!("failed to load audio item: {e:?}")))?;
+
+            let select_format =
+                |files: &AudioFiles, bitrate: Option<u32>| -> Option<(AudioFileFormat, FileId)> {
+                    let prefer = match bitrate {
+                        Some(96) => {
+                            vec![AudioFileFormat::OGG_VORBIS_96, AudioFileFormat::MP3_96]
+                        }
+                        Some(160) => {
+                            vec![AudioFileFormat::OGG_VORBIS_160, AudioFileFormat::MP3_160]
+                        }
+                        _ => vec![
+                            AudioFileFormat::OGG_VORBIS_320,
+                            AudioFileFormat::MP3_320,
+                            AudioFileFormat::MP3_256,
+                        ],
+                    };
+                    for f in prefer {
+                        if let Some(id) = files.get(&f) {
+                            return Some((f, *id));
+                        }
+                    }
+                    files.iter().next().map(|(f, id)| (*f, *id))
+                };
+
+            let (format, file_id) = select_format(&audio_item.files, bitrate_pref)
+                .ok_or_else(|| Error::from_reason("no audio files available"))?;
+
+            let cdn = CdnUrl::new(file_id)
+                .resolve_audio(&session)
+                .await
+                .map_err(|e| Error::from_reason(format!("failed to resolve cdn url: {e:?}")))?;
+            let cdn_url = cdn
+                .try_get_urls()
+                .map_err(|e| Error::from_reason(format!("no cdn url available: {e:?}")))?
+                .into_iter()
+                .next()
+                .ok_or_else(|| Error::from_reason("no cdn url available"))?
+                .to_owned();
+
+            let key = session
+                .audio_key()
+                .request(track_id, file_id)
+                .await
+                .map_err(|e| Error::from_reason(format!("audio key unavailable: {e:?}")))?;
+            let key_hex = key.0.iter().map(|b| format!("{:02x}", b)).collect::<String>();
+
+            Ok(ResolveAudioFileResult {
+                cdn_url,
+                key_hex,
+                format: format!("{:?}", format),
+            })
         })
     }
 
