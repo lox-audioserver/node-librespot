@@ -1894,8 +1894,10 @@ fn start_connect_device_inner(
             name: name.clone(),
             device_type: DeviceType::Speaker,
             is_group: false,
-            // Start with full volume so we rely on zone-side volume control; we do not sync Spotify volume.
-            // Spotify volume scale is 0..65535; use max to avoid muted start.
+            // Start at full volume: the Player does not attenuate locally (NoOpVolume below),
+            // so the PCM stays full-scale and the zone applies volume once on output. Volume
+            // changes from the Spotify picker are still forwarded to the zone via VolumeChanged.
+            // Spotify volume scale is 0..65535; use max to avoid a muted start.
             initial_volume: u16::MAX,
             disable_volume: false,
             volume_steps: 64,
@@ -1903,9 +1905,16 @@ fn start_connect_device_inner(
         };
 
         let player_config = PlayerConfig::default();
+        // The SoftMixer is still handed to the Spirc below so it tracks connect volume
+        // state and keeps emitting VolumeChanged events (forwarded to the zone). But the
+        // Player must NOT attenuate the PCM locally: volume is owned by the zone, which
+        // applies it once on output. Feeding the SoftMixer's soft volume into the Player
+        // here would double-attenuate (librespot volume × zone volume) whenever the
+        // Spotify slider is moved. NoOpVolume keeps the PCM at full scale so the zone is
+        // the sole attenuator while the Spotify picker still drives the zone volume.
         let mixer = SoftMixer::open(MixerConfig::default())
             .map_err(|e| Error::from_reason(format!("mixer init failed: {e}")))?;
-        let volume_getter = mixer.get_soft_volume();
+        let volume_getter: Box<dyn VolumeGetter + Send> = Box::new(NoOpVolume);
 
         let (tx, mut rx) = mpsc::channel::<Bytes>(256);
 
