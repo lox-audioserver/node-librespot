@@ -132,6 +132,12 @@ export interface LibrespotSession {
   ): StreamHandle;
   /** Resolve CDN URL + AES key for a track without downloading audio. */
   resolveAudioFile(opts: DownloadTrackOpts): ResolveAudioFileResult;
+  /**
+   * Async variant of {@link resolveAudioFile}: the blocking CDN/key lookup runs
+   * on the libuv threadpool, so it never stalls the Node event loop. Prefer this
+   * on the playback hot path.
+   */
+  resolveAudioFileAsync(opts: DownloadTrackOpts): Promise<ResolveAudioFileResult>;
   close(): Promise<void>;
 }
 

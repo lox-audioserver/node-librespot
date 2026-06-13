@@ -27,11 +27,11 @@ use librespot_playback::{
     player::{Player, PlayerEvent},
 };
 use log::{LevelFilter, Log, Metadata as LogMetadata, Record};
-use napi::bindgen_prelude::{Error, Result};
+use napi::bindgen_prelude::{AsyncTask, Error, Result};
 use napi::threadsafe_function::{
     ErrorStrategy, ThreadSafeCallContext, ThreadsafeFunction, ThreadsafeFunctionCallMode,
 };
-use napi::JsFunction;
+use napi::{Env, JsFunction, Task};
 use napi_derive::napi;
 use serde_json;
 use std::thread::sleep;
@@ -155,6 +155,115 @@ pub struct ResolveAudioFileResult {
     pub key_hex: String,
     /// Chosen Spotify audio format, e.g. "OGG_VORBIS_320" or "MP3_320".
     pub format: String,
+}
+
+/// Shared resolve body: load the audio item, pick a format, resolve the CDN URL
+/// and request the audio key. Runs on `runtime()`; used by both the sync
+/// `resolve_audio_file` and the async (off-main-thread) `resolve_audio_file_async`.
+async fn do_resolve_audio_file(
+    session: Session,
+    spotify_uri: SpotifyUri,
+    track_id: SpotifyId,
+    bitrate_pref: Option<u32>,
+) -> Result<ResolveAudioFileResult> {
+    let audio_item = AudioItem::get_file(&session, spotify_uri)
+        .await
+        .map_err(|e| Error::from_reason(format!("failed to load audio item: {e:?}")))?;
+
+    let select_format =
+        |files: &AudioFiles, bitrate: Option<u32>| -> Option<(AudioFileFormat, FileId)> {
+            let prefer = match bitrate {
+                Some(96) => {
+                    vec![AudioFileFormat::OGG_VORBIS_96, AudioFileFormat::MP3_96]
+                }
+                Some(160) => {
+                    vec![AudioFileFormat::OGG_VORBIS_160, AudioFileFormat::MP3_160]
+                }
+                _ => vec![
+                    AudioFileFormat::OGG_VORBIS_320,
+                    AudioFileFormat::MP3_320,
+                    AudioFileFormat::MP3_256,
+                ],
+            };
+            for f in prefer {
+                if let Some(id) = files.get(&f) {
+                    return Some((f, *id));
+                }
+            }
+            files.iter().next().map(|(f, id)| (*f, *id))
+        };
+
+    let (format, file_id) = select_format(&audio_item.files, bitrate_pref)
+        .ok_or_else(|| Error::from_reason("no audio files available"))?;
+
+    let cdn = CdnUrl::new(file_id)
+        .resolve_audio(&session)
+        .await
+        .map_err(|e| Error::from_reason(format!("failed to resolve cdn url: {e:?}")))?;
+    let cdn_url = cdn
+        .try_get_urls()
+        .map_err(|e| Error::from_reason(format!("no cdn url available: {e:?}")))?
+        .into_iter()
+        .next()
+        .ok_or_else(|| Error::from_reason("no cdn url available"))?
+        .to_owned();
+
+    let key = session
+        .audio_key()
+        .request(track_id, file_id)
+        .await
+        .map_err(|e| Error::from_reason(format!("audio key unavailable: {e:?}")))?;
+    let key_hex = key.0.iter().map(|b| format!("{:02x}", b)).collect::<String>();
+
+    Ok(ResolveAudioFileResult {
+        cdn_url,
+        key_hex,
+        format: format!("{:?}", format),
+    })
+}
+
+/// Parse + validate a Spotify URI into the ids needed to resolve audio. Cheap
+/// and synchronous; safe to run on the main thread before handing off to a
+/// worker.
+fn parse_resolve_target(uri: &str) -> Result<(SpotifyUri, SpotifyId)> {
+    if uri.is_empty() {
+        return Err(Error::from_reason("uri is required"));
+    }
+    let spotify_uri = SpotifyUri::from_uri(uri)
+        .map_err(|e| Error::from_reason(format!("invalid spotify uri: {:?}", e)))?;
+    let track_id: SpotifyId = (&spotify_uri)
+        .try_into()
+        .map_err(|e| Error::from_reason(format!("invalid spotify id: {e:?}")))?;
+    Ok((spotify_uri, track_id))
+}
+
+/// libuv-threadpool task for `resolve_audio_file_async`: runs the blocking
+/// `runtime().block_on(do_resolve_audio_file(..))` on a worker thread so the
+/// Node event loop (and thus every other zone's audio pacing) is never stalled
+/// by the synchronous CDN/key lookup.
+pub struct ResolveAudioFileTask {
+    session: Session,
+    spotify_uri: SpotifyUri,
+    track_id: SpotifyId,
+    bitrate_pref: Option<u32>,
+}
+
+impl Task for ResolveAudioFileTask {
+    type Output = ResolveAudioFileResult;
+    type JsValue = ResolveAudioFileResult;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        runtime().block_on(do_resolve_audio_file(
+            self.session.clone(),
+            self.spotify_uri.clone(),
+            self.track_id,
+            self.bitrate_pref,
+        ))
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
 }
 
 /// Result of a credentials login flow.
@@ -1375,75 +1484,32 @@ impl LibrespotSession {
     /// decoding (Spotify prepends a ~167-byte header).
     #[napi]
     pub fn resolve_audio_file(&self, opts: DownloadTrackOpts) -> Result<ResolveAudioFileResult> {
-        let uri = opts.uri.clone();
-        if uri.is_empty() {
-            return Err(Error::from_reason("uri is required"));
-        }
-        let spotify_uri = SpotifyUri::from_uri(&uri)
-            .map_err(|e| Error::from_reason(format!("invalid spotify uri: {:?}", e)))?;
-        let track_id: SpotifyId = (&spotify_uri)
-            .try_into()
-            .map_err(|e| Error::from_reason(format!("invalid spotify id: {e:?}")))?;
+        let (spotify_uri, track_id) = parse_resolve_target(&opts.uri)?;
+        runtime().block_on(do_resolve_audio_file(
+            self.session.clone(),
+            spotify_uri,
+            track_id,
+            opts.bitrate,
+        ))
+    }
 
-        let session = self.session.clone();
-        let bitrate_pref = opts.bitrate;
-
-        runtime().block_on(async move {
-            let audio_item = AudioItem::get_file(&session, spotify_uri.clone())
-                .await
-                .map_err(|e| Error::from_reason(format!("failed to load audio item: {e:?}")))?;
-
-            let select_format =
-                |files: &AudioFiles, bitrate: Option<u32>| -> Option<(AudioFileFormat, FileId)> {
-                    let prefer = match bitrate {
-                        Some(96) => {
-                            vec![AudioFileFormat::OGG_VORBIS_96, AudioFileFormat::MP3_96]
-                        }
-                        Some(160) => {
-                            vec![AudioFileFormat::OGG_VORBIS_160, AudioFileFormat::MP3_160]
-                        }
-                        _ => vec![
-                            AudioFileFormat::OGG_VORBIS_320,
-                            AudioFileFormat::MP3_320,
-                            AudioFileFormat::MP3_256,
-                        ],
-                    };
-                    for f in prefer {
-                        if let Some(id) = files.get(&f) {
-                            return Some((f, *id));
-                        }
-                    }
-                    files.iter().next().map(|(f, id)| (*f, *id))
-                };
-
-            let (format, file_id) = select_format(&audio_item.files, bitrate_pref)
-                .ok_or_else(|| Error::from_reason("no audio files available"))?;
-
-            let cdn = CdnUrl::new(file_id)
-                .resolve_audio(&session)
-                .await
-                .map_err(|e| Error::from_reason(format!("failed to resolve cdn url: {e:?}")))?;
-            let cdn_url = cdn
-                .try_get_urls()
-                .map_err(|e| Error::from_reason(format!("no cdn url available: {e:?}")))?
-                .into_iter()
-                .next()
-                .ok_or_else(|| Error::from_reason("no cdn url available"))?
-                .to_owned();
-
-            let key = session
-                .audio_key()
-                .request(track_id, file_id)
-                .await
-                .map_err(|e| Error::from_reason(format!("audio key unavailable: {e:?}")))?;
-            let key_hex = key.0.iter().map(|b| format!("{:02x}", b)).collect::<String>();
-
-            Ok(ResolveAudioFileResult {
-                cdn_url,
-                key_hex,
-                format: format!("{:?}", format),
-            })
-        })
+    /// Async variant of `resolve_audio_file`: returns a Promise and runs the
+    /// blocking CDN/key lookup on the libuv threadpool, so resolving a track
+    /// never stalls the Node event loop (and other zones' audio pacing). Prefer
+    /// this on the playback hot path; the sync version remains for simple/probe
+    /// callers.
+    #[napi(ts_return_type = "Promise<ResolveAudioFileResult>")]
+    pub fn resolve_audio_file_async(
+        &self,
+        opts: DownloadTrackOpts,
+    ) -> Result<AsyncTask<ResolveAudioFileTask>> {
+        let (spotify_uri, track_id) = parse_resolve_target(&opts.uri)?;
+        Ok(AsyncTask::new(ResolveAudioFileTask {
+            session: self.session.clone(),
+            spotify_uri,
+            track_id,
+            bitrate_pref: opts.bitrate,
+        }))
     }
 
     /// Download (stream) raw decrypted audio bytes for a track/episode.

@@ -149,6 +149,9 @@ function wrapSession(session: LibrespotSession) {
     resolveAudioFile: (opts: DownloadTrackOpts): ResolveAudioFileResult => {
       return (session as any).resolveAudioFile({ uri: opts.uri, bitrate: opts.bitrate });
     },
+    resolveAudioFileAsync: (opts: DownloadTrackOpts): Promise<ResolveAudioFileResult> => {
+      return (session as any).resolveAudioFileAsync({ uri: opts.uri, bitrate: opts.bitrate });
+    },
     close: () => session.close(),
   };
 }
