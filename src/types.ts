@@ -38,6 +38,18 @@ export interface ResolveAudioFileResult {
   format: string;
 }
 
+/** Track metadata rendered from librespot's protocol metadata (for browsing). */
+export interface TrackMetadata {
+  uri: string;
+  name: string;
+  /** Artist names joined with ", ". */
+  artists: string;
+  album: string;
+  durationMs: number;
+  /** Cover art URL, or "" if none. */
+  coverUrl: string;
+}
+
 /** Result of a credentials login flow. */
 export interface CredentialsResult {
   username: string;
@@ -138,6 +150,10 @@ export interface LibrespotSession {
    * on the playback hot path.
    */
   resolveAudioFileAsync(opts: DownloadTrackOpts): Promise<ResolveAudioFileResult>;
+  /** Fetch a playlist's track URIs via the Spotify protocol (works for non-owned playlists). */
+  getPlaylistTracks(uri: string): Promise<string[]>;
+  /** Hydrate a batch of track URIs to metadata via the Spotify protocol. */
+  getTracksMetadata(uris: string[]): Promise<TrackMetadata[]>;
   close(): Promise<void>;
 }
 

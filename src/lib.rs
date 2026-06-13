@@ -17,7 +17,7 @@ use librespot_core::{
 };
 use librespot_discovery::{DeviceType, Discovery};
 use librespot_metadata::audio::{AudioFileFormat, AudioFiles, AudioItem};
-use librespot_metadata::{Album, Artist, Metadata, Track};
+use librespot_metadata::{Album, Artist, Metadata, Playlist, Track};
 use librespot_playback::{
     audio_backend::{Sink, SinkResult},
     config::{AudioFormat, Bitrate, PlayerConfig},
@@ -259,6 +259,105 @@ impl Task for ResolveAudioFileTask {
             self.track_id,
             self.bitrate_pref,
         ))
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+/// Track metadata as needed by the content/browse layer (rendered from librespot's
+/// protocol metadata so it works without the restricted Web API).
+#[napi(object)]
+pub struct TrackMetadata {
+    pub uri: String,
+    pub name: String,
+    /// Artist names joined with ", ".
+    pub artists: String,
+    pub album: String,
+    pub duration_ms: i32,
+    /// Cover art URL (largest available), or "" if none.
+    pub cover_url: String,
+}
+
+/// libuv-threadpool task for `get_tracks_metadata`: hydrate a batch of track URIs
+/// via the Spotify protocol, concurrently, off the Node event loop.
+pub struct TracksMetadataTask {
+    session: Session,
+    uris: Vec<String>,
+}
+
+impl Task for TracksMetadataTask {
+    type Output = Vec<TrackMetadata>;
+    type JsValue = Vec<TrackMetadata>;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        let session = self.session.clone();
+        let uris = self.uris.clone();
+        runtime().block_on(async move {
+            let image_template = session
+                .get_user_attribute("image-url")
+                .unwrap_or_else(|| String::from("https://i.scdn.co/image/{file_id}"));
+            let futs = uris.into_iter().map(|uri| {
+                let session = session.clone();
+                let image_template = image_template.clone();
+                async move {
+                    let su = SpotifyUri::from_uri(&uri).ok()?;
+                    let track = Track::get(&session, &su).await.ok()?;
+                    let artists = track
+                        .artists
+                        .0
+                        .iter()
+                        .map(|a| a.name.clone())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let cover_url = track
+                        .album
+                        .covers
+                        .0
+                        .first()
+                        .map(|img| image_template.replace("{file_id}", &img.id.to_base16()))
+                        .unwrap_or_default();
+                    Some(TrackMetadata {
+                        uri,
+                        name: track.name,
+                        artists,
+                        album: track.album.name,
+                        duration_ms: track.duration,
+                        cover_url,
+                    })
+                }
+            });
+            let results = futures::future::join_all(futs).await;
+            Ok(results.into_iter().flatten().collect())
+        })
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+/// libuv-threadpool task for `get_playlist_tracks`: fetches a playlist's track
+/// URIs via the Spotify protocol off the Node event loop.
+pub struct PlaylistTracksTask {
+    session: Session,
+    playlist_uri: SpotifyUri,
+}
+
+impl Task for PlaylistTracksTask {
+    type Output = Vec<String>;
+    type JsValue = Vec<String>;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        let session = self.session.clone();
+        let playlist_uri = self.playlist_uri.clone();
+        runtime().block_on(async move {
+            let playlist = Playlist::get(&session, &playlist_uri)
+                .await
+                .map_err(|e| Error::from_reason(format!("failed to load playlist: {e:?}")))?;
+            Ok(playlist.tracks().map(|u| u.to_uri()).collect())
+        })
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
@@ -1498,6 +1597,30 @@ impl LibrespotSession {
     /// never stalls the Node event loop (and other zones' audio pacing). Prefer
     /// this on the playback hot path; the sync version remains for simple/probe
     /// callers.
+    /// Fetch a playlist's track URIs via the Spotify protocol (playlist4 /
+    /// hm://playlist). Unlike the Web API (restricted since Feb 2026 to only the
+    /// owner's playlists), this returns contents for any playlist the account can
+    /// see, including other users' public playlists — the same path the desktop
+    /// client uses. Runs on the libuv threadpool so it never stalls the loop.
+    /// Hydrate a batch of track URIs to metadata via the Spotify protocol.
+    #[napi(ts_return_type = "Promise<TrackMetadata[]>")]
+    pub fn get_tracks_metadata(&self, uris: Vec<String>) -> Result<AsyncTask<TracksMetadataTask>> {
+        Ok(AsyncTask::new(TracksMetadataTask {
+            session: self.session.clone(),
+            uris,
+        }))
+    }
+
+    #[napi(ts_return_type = "Promise<string[]>")]
+    pub fn get_playlist_tracks(&self, uri: String) -> Result<AsyncTask<PlaylistTracksTask>> {
+        let playlist_uri = SpotifyUri::from_uri(&uri)
+            .map_err(|e| Error::from_reason(format!("invalid spotify uri: {:?}", e)))?;
+        Ok(AsyncTask::new(PlaylistTracksTask {
+            session: self.session.clone(),
+            playlist_uri,
+        }))
+    }
+
     #[napi(ts_return_type = "Promise<ResolveAudioFileResult>")]
     pub fn resolve_audio_file_async(
         &self,
