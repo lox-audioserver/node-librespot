@@ -7,7 +7,8 @@ Used by [lox-audioserver](https://github.com/rudyberends/lox-audioserver) to han
 ## Features
 - Stream a Spotify track/episode to PCM buffers (`streamTrack`) using a Web API **access token**.
 - Pull raw decrypted audio bytes (Ogg/MP3) for a track/episode without decoding (`downloadTrack`).
-- Resolve a track's signed CDN URL + AES audio key without downloading, so the caller can fetch (HTTP Range) and decrypt itself (`resolveAudioFile`).
+- Resolve a track's signed CDN URL + AES audio key without downloading, so the caller can fetch (HTTP Range) and decrypt itself (`resolveAudioFile`, or `resolveAudioFileAsync` to run the blocking lookup off the Node event loop).
+- Browse over the Spotify protocol, independent of the Web API: list a playlist's track URIs (`getPlaylistTracks`, works for **any** playlist the account can see — including other users' public playlists, which the Web API restricts) and hydrate track metadata (`getTracksMetadata` → name/artists/album/duration/cover).
 - Host a Spotify Connect endpoint with a Web API access token + your own Spotify app client id (`startConnectDeviceWithToken`).
 - No disk cache required; everything stays in-memory.
 - Starts Connect hosts at max volume (volume control stays on the consumer side).
@@ -100,8 +101,15 @@ const { cdnUrl, keyHex, format } = session.resolveAudioFile({ uri: 'spotify:trac
 // - format: e.g. "OGG_VORBIS_320" or "MP3_320"
 // Decrypt with AES-128-CTR using the fixed Spotify audio IV (counter = byteOffset / 16).
 // For OGG, strip up to the first 'OggS' page (Spotify prepends a ~167-byte header).
+// resolveAudioFileAsync({ uri, bitrate }) is the same but returns a Promise and runs
+// the blocking CDN/key lookup on the libuv threadpool (won't stall the event loop).
 
 handle.stop();
+
+// Browse over the protocol (no Web API needed; works for non-owned playlists):
+const uris = await session.getPlaylistTracks('spotify:playlist:37i9dQZF1DXcBWIGoYBM5M');
+const tracks = await session.getTracksMetadata(uris.slice(0, 50));
+// tracks: [{ uri, name, artists, album, durationMs, coverUrl }, ...]
 ```
 
 ## Authentication
