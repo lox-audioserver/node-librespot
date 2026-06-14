@@ -38,16 +38,16 @@ export interface ResolveAudioFileResult {
   format: string;
 }
 
-/** Track metadata rendered from librespot's protocol metadata (for browsing). */
-export interface TrackMetadata {
-  uri: string;
-  name: string;
-  /** Artist names joined with ", ". */
-  artists: string;
-  album: string;
-  durationMs: number;
-  /** Cover art URL, or "" if none. */
-  coverUrl: string;
+/**
+ * First-party session tokens for direct pathfinder/spclient calls from the app.
+ * Both are refreshed/cached internally by librespot.
+ */
+export interface SessionTokens {
+  accessToken: string;
+  tokenType: string;
+  clientToken: string;
+  /** Access-token lifetime in milliseconds. */
+  expiresInMs: number;
 }
 
 /** Result of a credentials login flow. */
@@ -150,10 +150,12 @@ export interface LibrespotSession {
    * on the playback hot path.
    */
   resolveAudioFileAsync(opts: DownloadTrackOpts): Promise<ResolveAudioFileResult>;
-  /** Fetch a playlist's track URIs via the Spotify protocol (works for non-owned playlists). */
-  getPlaylistTracks(uri: string): Promise<string[]>;
-  /** Hydrate a batch of track URIs to metadata via the Spotify protocol. */
-  getTracksMetadata(uris: string[]): Promise<TrackMetadata[]>;
+  /**
+   * Mint the first-party session tokens (login5 bearer + client-token) so the
+   * app can call pathfinder/spclient itself. Both are refreshed/cached by
+   * librespot; call whenever a fresh pair is needed.
+   */
+  getTokens(): Promise<SessionTokens>;
   close(): Promise<void>;
 }
 

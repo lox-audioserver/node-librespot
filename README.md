@@ -8,7 +8,7 @@ Used by [lox-audioserver](https://github.com/rudyberends/lox-audioserver) to han
 - Stream a Spotify track/episode to PCM buffers (`streamTrack`) using a Web API **access token**.
 - Pull raw decrypted audio bytes (Ogg/MP3) for a track/episode without decoding (`downloadTrack`).
 - Resolve a track's signed CDN URL + AES audio key without downloading, so the caller can fetch (HTTP Range) and decrypt itself (`resolveAudioFile`, or `resolveAudioFileAsync` to run the blocking lookup off the Node event loop).
-- Browse over the Spotify protocol, independent of the Web API: list a playlist's track URIs (`getPlaylistTracks`, works for **any** playlist the account can see — including other users' public playlists, which the Web API restricts) and hydrate track metadata (`getTracksMetadata` → name/artists/album/duration/cover).
+- Mint first-party session tokens — the login5 bearer + client-token (`getTokens`) — so the consumer can call Spotify's own endpoints (e.g. pathfinder) itself for browse/metadata, independent of the Web API. Both are refreshed/cached internally.
 - Host a Spotify Connect endpoint with a Web API access token + your own Spotify app client id (`startConnectDeviceWithToken`).
 - No disk cache required; everything stays in-memory.
 - Starts Connect hosts at max volume (volume control stays on the consumer side).
@@ -106,10 +106,10 @@ const { cdnUrl, keyHex, format } = session.resolveAudioFile({ uri: 'spotify:trac
 
 handle.stop();
 
-// Browse over the protocol (no Web API needed; works for non-owned playlists):
-const uris = await session.getPlaylistTracks('spotify:playlist:37i9dQZF1DXcBWIGoYBM5M');
-const tracks = await session.getTracksMetadata(uris.slice(0, 50));
-// tracks: [{ uri, name, artists, album, durationMs, coverUrl }, ...]
+// Mint first-party tokens to call Spotify's own endpoints (e.g. pathfinder) yourself:
+const { accessToken, tokenType, clientToken, expiresInMs } = await session.getTokens();
+// e.g. fetch('https://api-partner.spotify.com/pathfinder/v1/query', {
+//   headers: { Authorization: `${tokenType} ${accessToken}`, 'client-token': clientToken } })
 ```
 
 ## Authentication

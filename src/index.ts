@@ -13,7 +13,7 @@ import type {
   DownloadTrackOpts,
   DownloadHandle,
   ResolveAudioFileResult,
-  TrackMetadata,
+  SessionTokens,
 } from './types';
 
 function detectLibc(): 'gnu' | 'musl' {
@@ -153,11 +153,8 @@ function wrapSession(session: LibrespotSession) {
     resolveAudioFileAsync: (opts: DownloadTrackOpts): Promise<ResolveAudioFileResult> => {
       return (session as any).resolveAudioFileAsync({ uri: opts.uri, bitrate: opts.bitrate });
     },
-    getPlaylistTracks: (uri: string): Promise<string[]> => {
-      return (session as any).getPlaylistTracks(uri);
-    },
-    getTracksMetadata: (uris: string[]): Promise<TrackMetadata[]> => {
-      return (session as any).getTracksMetadata(uris);
+    getTokens: (): Promise<SessionTokens> => {
+      return (session as any).getTokens();
     },
     close: () => session.close(),
   };
