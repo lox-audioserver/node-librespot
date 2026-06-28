@@ -157,18 +157,60 @@ pub struct ResolveAudioFileResult {
     pub format: String,
 }
 
+/// Follow Spotify track relinking. A track that is unavailable in the user's
+/// market carries empty `files` plus a list of `alternatives` (the playable
+/// substitute Spotify's own client transparently swaps in). Without this, such a
+/// track resolves to "no audio files available" even though it plays fine in the
+/// official app. Mirrors librespot's player `find_available_alternative`: keep the
+/// original if it has files, otherwise resolve each alternative and take the first
+/// one available to this user. The returned item's `track_id` is the id to use for
+/// the audio-key request (the alternative's id when relinked).
+async fn resolve_playable_audio_item(
+    session: &Session,
+    audio_item: AudioItem,
+) -> Result<AudioItem> {
+    if audio_item.availability.is_err() {
+        return Err(Error::from_reason("track is unavailable"));
+    }
+    if !audio_item.files.is_empty() {
+        return Ok(audio_item);
+    }
+    if let Some(alternatives) = audio_item.alternatives {
+        for alt_uri in alternatives.0 {
+            if let Ok(alt) = AudioItem::get_file(session, alt_uri).await {
+                if alt.availability.is_ok() && !alt.files.is_empty() {
+                    log::debug!("track relinked; using available alternative");
+                    return Ok(alt);
+                }
+            }
+        }
+    }
+    Err(Error::from_reason("no audio files available"))
+}
+
+/// The `SpotifyId` for the audio-key request, taken from a resolved `AudioItem`
+/// (the alternative's id when the track was relinked).
+fn audio_item_track_id(item: &AudioItem) -> Result<SpotifyId> {
+    (&item.track_id)
+        .try_into()
+        .map_err(|e| Error::from_reason(format!("invalid spotify id: {e:?}")))
+}
+
 /// Shared resolve body: load the audio item, pick a format, resolve the CDN URL
 /// and request the audio key. Runs on `runtime()`; used by both the sync
 /// `resolve_audio_file` and the async (off-main-thread) `resolve_audio_file_async`.
 async fn do_resolve_audio_file(
     session: Session,
     spotify_uri: SpotifyUri,
-    track_id: SpotifyId,
     bitrate_pref: Option<u32>,
 ) -> Result<ResolveAudioFileResult> {
     let audio_item = AudioItem::get_file(&session, spotify_uri)
         .await
         .map_err(|e| Error::from_reason(format!("failed to load audio item: {e:?}")))?;
+    // Follow relinking before picking a format; `track_id` is the playable item's
+    // id (the alternative's when relinked) so the audio key matches.
+    let audio_item = resolve_playable_audio_item(&session, audio_item).await?;
+    let track_id = audio_item_track_id(&audio_item)?;
 
     let select_format =
         |files: &AudioFiles, bitrate: Option<u32>| -> Option<(AudioFileFormat, FileId)> {
@@ -244,7 +286,6 @@ fn parse_resolve_target(uri: &str) -> Result<(SpotifyUri, SpotifyId)> {
 pub struct ResolveAudioFileTask {
     session: Session,
     spotify_uri: SpotifyUri,
-    track_id: SpotifyId,
     bitrate_pref: Option<u32>,
 }
 
@@ -256,7 +297,6 @@ impl Task for ResolveAudioFileTask {
         runtime().block_on(do_resolve_audio_file(
             self.session.clone(),
             self.spotify_uri.clone(),
-            self.track_id,
             self.bitrate_pref,
         ))
     }
@@ -1533,11 +1573,10 @@ impl LibrespotSession {
     /// decoding (Spotify prepends a ~167-byte header).
     #[napi]
     pub fn resolve_audio_file(&self, opts: DownloadTrackOpts) -> Result<ResolveAudioFileResult> {
-        let (spotify_uri, track_id) = parse_resolve_target(&opts.uri)?;
+        let (spotify_uri, _) = parse_resolve_target(&opts.uri)?;
         runtime().block_on(do_resolve_audio_file(
             self.session.clone(),
             spotify_uri,
-            track_id,
             opts.bitrate,
         ))
     }
@@ -1563,11 +1602,10 @@ impl LibrespotSession {
         &self,
         opts: DownloadTrackOpts,
     ) -> Result<AsyncTask<ResolveAudioFileTask>> {
-        let (spotify_uri, track_id) = parse_resolve_target(&opts.uri)?;
+        let (spotify_uri, _) = parse_resolve_target(&opts.uri)?;
         Ok(AsyncTask::new(ResolveAudioFileTask {
             session: self.session.clone(),
             spotify_uri,
-            track_id,
             bitrate_pref: opts.bitrate,
         }))
     }
@@ -1648,14 +1686,14 @@ impl LibrespotSession {
         let session = self.session.clone();
         let bitrate_pref = opts.bitrate;
 
-        let track_id: SpotifyId = (&spotify_uri)
-            .try_into()
-            .map_err(|e| Error::from_reason(format!("invalid spotify id: {e:?}")))?;
-
         let (encrypted_file, key) = runtime().block_on(async {
             let audio_item = AudioItem::get_file(&session, spotify_uri.clone())
                 .await
                 .map_err(|e| Error::from_reason(format!("failed to load audio item: {e:?}")))?;
+            // Follow relinking; `track_id` becomes the playable item's id (the
+            // alternative's when relinked) so the audio key matches.
+            let audio_item = resolve_playable_audio_item(&session, audio_item).await?;
+            let track_id = audio_item_track_id(&audio_item)?;
 
             let select_format =
                 |files: &AudioFiles, bitrate: Option<u32>| -> Option<(AudioFileFormat, FileId)> {
